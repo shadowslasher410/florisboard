@@ -23,10 +23,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -98,7 +96,7 @@ import dev.patrickgold.jetpref.material.ui.JetPrefListItem
 import dev.patrickgold.jetpref.material.ui.JetPrefTextField
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.florisboard.lib.android.showLongToastSync
+import org.florisboard.lib.android.showLongToast
 import org.florisboard.lib.color.MaterialYouFlagsSaver
 import org.florisboard.lib.compose.FlorisIconButton
 import org.florisboard.lib.compose.FlorisOutlinedBox
@@ -287,12 +285,10 @@ fun ThemeEditorScreen(
             handleBackPress()
         }
 
-        val isImeVisible = WindowInsets.isImeVisible
         LaunchedEffect(showEditComponentMetaDialog, showFineTuneDialog, snyggRuleToEdit, snyggPropertyToEdit) {
             val visible = showEditComponentMetaDialog || showFineTuneDialog ||
                 snyggRuleToEdit != null || snyggPropertyToEdit != null
             if (visible) {
-                oldFocusState = isImeVisible
                 focusManager.clearFocus()
             } else {
                 delay(250)
@@ -613,6 +609,7 @@ private fun ComponentMetaEditorDialog(
 ) {
     val context = LocalContext.current
     var showValidationErrors by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     var id by rememberSaveable { mutableStateOf(editor.id) }
     val idValidation = rememberValidationResult(ExtensionValidation.ComponentId, id)
@@ -634,9 +631,12 @@ private fun ComponentMetaEditorDialog(
                 authorsValidation.isValid() &&
                 stylesheetPathValidation.isValid()
             if (!allFieldsValid) {
+                @Suppress("AssignedValueIsNeverRead")
                 showValidationErrors = true
             } else if (id != editor.id && (workspace.editor as? ThemeExtensionEditor)?.themes?.find { it.id == id.trim() } != null) {
-                context.showLongToastSync("A theme with this ID already exists!")
+                scope.launch {
+                    context.showLongToast("A theme with this ID already exists!")
+                }
             } else {
                 workspace.update {
                     editor.id = id.trim()

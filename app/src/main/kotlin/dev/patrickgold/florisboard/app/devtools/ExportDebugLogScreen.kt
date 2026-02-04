@@ -30,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -43,7 +44,10 @@ import dev.patrickgold.florisboard.app.FlorisPreferenceStore
 import dev.patrickgold.florisboard.clipboardManager
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
 import dev.patrickgold.florisboard.lib.devtools.Devtools
-import org.florisboard.lib.android.showShortToastSync
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.florisboard.lib.android.showShortToast
 import org.florisboard.lib.compose.FlorisButton
 import org.florisboard.lib.compose.florisHorizontalScroll
 import org.florisboard.lib.compose.florisScrollbar
@@ -59,13 +63,16 @@ fun ExportDebugLogScreen() = FlorisScreen {
     val context = LocalContext.current
     val resources = LocalResources.current
     val clipboardManager by context.clipboardManager()
+    val scope = rememberCoroutineScope()
 
     var debugLog by remember { mutableStateOf<List<String>?>(null) }
     var formattedDebugLog by remember { mutableStateOf<List<String>?>(null) }
 
     LaunchedEffect(Unit) {
-        debugLog = Devtools.generateDebugLog(context, prefs, includeLogcat = true).lines()
-        formattedDebugLog = Devtools.generateDebugLogForGithub(context, prefs, includeLogcat = true).lines()
+        withContext(Dispatchers.IO) {
+            debugLog = Devtools.generateDebugLog(context, prefs, includeLogcat = true).lines()
+            formattedDebugLog = Devtools.generateDebugLogForGithub(context, prefs, includeLogcat = true).lines()
+        }
     }
 
     bottomBar {
@@ -75,8 +82,12 @@ fun ExportDebugLogScreen() = FlorisScreen {
         ) {
             FlorisButton(
                 onClick = {
-                    clipboardManager.addNewPlaintext(debugLog!!.joinToString("\n"))
-                    context.showShortToastSync(resources.getString(R.string.devtools__debuglog__copied_to_clipboard))
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            clipboardManager.addNewPlaintext(debugLog!!.joinToString("\n"))
+                        }
+                        context.showShortToast(resources.getString(R.string.devtools__debuglog__copied_to_clipboard))
+                    }
                 },
                 modifier = Modifier,
                 text = stringRes(R.string.devtools__debuglog__copy_log),
@@ -84,8 +95,12 @@ fun ExportDebugLogScreen() = FlorisScreen {
             )
             FlorisButton(
                 onClick = {
-                    clipboardManager.addNewPlaintext(formattedDebugLog!!.joinToString("\n"))
-                    context.showShortToastSync(resources.getString(R.string.devtools__debuglog__copied_to_clipboard))
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            clipboardManager.addNewPlaintext(formattedDebugLog!!.joinToString("\n"))
+                        }
+                        context.showShortToast(resources.getString(R.string.devtools__debuglog__copied_to_clipboard))
+                    }
                 },
                 text = stringRes(R.string.devtools__debuglog__copy_for_github),
                 enabled = debugLog != null,

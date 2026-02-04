@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +31,8 @@ import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
 import dev.patrickgold.jetpref.datastore.ui.Preference
 import dev.patrickgold.jetpref.material.ui.JetPrefAlertDialog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.florisboard.lib.android.AndroidSettings
 import org.florisboard.lib.compose.stringRes
 
@@ -45,14 +48,26 @@ fun AndroidSettingsScreen(name: String?) = FlorisScreen {
 
     val context = LocalContext.current
 
-    val settingsGroup = when (name) {
-        AndroidSettings.Global.groupId -> AndroidSettings.Global
-        AndroidSettings.Secure.groupId -> AndroidSettings.Secure
-        AndroidSettings.System.groupId -> AndroidSettings.System
-        else -> AndroidSettings.Global
+    val settingsGroup = remember(name) {
+        when (name) {
+            AndroidSettings.Global.groupId -> AndroidSettings.Global
+            AndroidSettings.Secure.groupId -> AndroidSettings.Secure
+            AndroidSettings.System.groupId -> AndroidSettings.System
+            else -> null
+        }
     }
-    val nameValueTable = remember(name) { settingsGroup.getAllKeys().toList() }
+    var nameValueTable by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
     var dialogKey by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(settingsGroup) {
+        if (settingsGroup == null) {
+            nameValueTable = emptyList()
+            return@LaunchedEffect
+        }
+        withContext(Dispatchers.IO) {
+            nameValueTable = settingsGroup.getAllKeys().toList()
+        }
+    }
 
     content {
         LazyColumn {
@@ -65,16 +80,21 @@ fun AndroidSettingsScreen(name: String?) = FlorisScreen {
             }
         }
 
-        if (dialogKey != null) {
+        val key = dialogKey
+        if (key != null && settingsGroup != null) {
+            var dialogValue by remember { mutableStateOf<String?>(null) }
+            LaunchedEffect(key) {
+                withContext(Dispatchers.IO) {
+                    dialogValue = (settingsGroup.getString(context, key) ?: "(null)").ifBlank { "(blank)" }
+                }
+            }
+
             JetPrefAlertDialog(
-                title = dialogKey!!,
-                onDismiss = { dialogKey = null },
+                title = key
             ) {
                 SelectionContainer {
                     Text(
-                        text = remember {
-                            (settingsGroup.getString(context, dialogKey!!) ?: "(null)").ifBlank { "(blank)" }
-                        },
+                        text = dialogValue ?: "...",
                     )
                 }
             }

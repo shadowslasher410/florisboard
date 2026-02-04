@@ -58,11 +58,12 @@ import dev.patrickgold.florisboard.lib.io.ZipUtils
 import dev.patrickgold.jetpref.datastore.runtime.AndroidAppDataStorage
 import dev.patrickgold.jetpref.datastore.runtime.FileBasedStorage
 import dev.patrickgold.jetpref.material.ui.JetPrefListItem
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import org.florisboard.lib.android.showLongToast
-import org.florisboard.lib.android.showLongToastSync
 import org.florisboard.lib.android.writeFromFile
 import org.florisboard.lib.compose.FlorisButtonBar
 import org.florisboard.lib.compose.FlorisOutlinedBox
@@ -146,28 +147,36 @@ fun BackupScreen() = FlorisScreen {
 
     var backupDestination by remember { mutableStateOf(Backup.Destination.FILE_SYS) }
     val backupFilesSelector = remember { Backup.FilesSelector() }
-    var backupWorkspace: CacheManager.BackupAndRestoreWorkspace? = null
+    var backupWorkspace by remember { mutableStateOf<CacheManager.BackupAndRestoreWorkspace?>(null) }
 
     val backUpToFileSystemLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
         onResult = { uri ->
-            if (uri == null) {
-                // User can modify checkboxes between cancellation and second
-                // trigger, so we make sure to clear out the previous workspace
-                backupWorkspace?.close()
-                backupWorkspace = null
-                return@rememberLauncherForActivityResult
-            }
-            runCatching {
-                context.contentResolver.writeFromFile(uri, backupWorkspace!!.zipFile)
-                backupWorkspace!!.close()
-            }.onSuccess {
-                context.showLongToastSync(R.string.backup_and_restore__back_up__success)
-                navController.popBackStack()
-            }.onFailure { error ->
-                flogError { error.stackTraceToString() }
-                context.showLongToastSync(R.string.backup_and_restore__back_up__failure, "error_message" to error.message)
-                backupWorkspace = null
+            scope.launch {
+                if (uri == null) {
+                    withContext(Dispatchers.IO) {
+                        backupWorkspace?.close()
+                    }
+                    backupWorkspace = null
+                    return@launch
+                }
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.writeFromFile(uri, backupWorkspace!!.zipFile)
+                        backupWorkspace!!.close()
+                    }
+                }
+                result.onSuccess {
+                    context.showLongToast(R.string.backup_and_restore__back_up__success)
+                    navController.popBackStack()
+                }.onFailure { error ->
+                    flogError { error.stackTraceToString() }
+                    context.showLongToast(
+                        R.string.backup_and_restore__back_up__failure,
+                        "error_message" to error.message,
+                    )
+                    backupWorkspace = null
+                }
             }
         },
     )
@@ -183,10 +192,12 @@ fun BackupScreen() = FlorisScreen {
         }
         val workspaceFilesDir = workspace.inputDir.subDir("files")
         if (backupFilesSelector.imeKeyboard) {
-            context.filesDir.subDir(ExtensionManager.IME_KEYBOARD_PATH).copyRecursively(workspaceFilesDir.subDir(ExtensionManager.IME_KEYBOARD_PATH))
+            context.filesDir.subDir(ExtensionManager.IME_KEYBOARD_PATH)
+                .copyRecursively(workspaceFilesDir.subDir(ExtensionManager.IME_KEYBOARD_PATH))
         }
         if (backupFilesSelector.imeTheme) {
-            context.filesDir.subDir(ExtensionManager.IME_THEME_PATH).copyRecursively(workspaceFilesDir.subDir(ExtensionManager.IME_THEME_PATH))
+            context.filesDir.subDir(ExtensionManager.IME_THEME_PATH)
+                .copyRecursively(workspaceFilesDir.subDir(ExtensionManager.IME_THEME_PATH))
         }
 
         if (backupFilesSelector.provideClipboardItems()) {
@@ -231,47 +242,60 @@ fun BackupScreen() = FlorisScreen {
         backupWorkspace = workspace
     }
 
-    suspend fun prepareAndPerformBackup() {
-        runCatching {
-            if (backupWorkspace == null || backupWorkspace!!.isClosed()) {
-                prepareBackupWorkspace()
-            }
-            when (backupDestination) {
-                Backup.Destination.FILE_SYS -> {
-                    backUpToFileSystemLauncher.launch(backupWorkspace!!.zipFile.name)
-                }
-
-                Backup.Destination.SHARE_INTENT -> {
-                    val uri =
-                        FileProvider.getUriForFile(context, Backup.FILE_PROVIDER_AUTHORITY, backupWorkspace!!.zipFile)
-                    val shareIntent = ShareCompat.IntentBuilder(context)
-                        .setStream(uri)
-                        .setType(FileRegistry.BackupArchive.mediaType)
-                        .createChooserIntent()
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    context.startActivity(shareIntent)
-                }
-            }
-        }.onFailure { error ->
-            flogError { error.stackTraceToString() }
-            context.showLongToast(R.string.backup_and_restore__back_up__failure, "error_message" to error.message)
-            backupWorkspace = null
-        }
-    }
-
     bottomBar {
         FlorisButtonBar {
             ButtonBarSpacer()
             ButtonBarTextButton(
                 onClick = {
-                    backupWorkspace?.close()
-                    navController.popBackStack()
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            backupWorkspace?.close()
+                        }
+                        navController.popBackStack()
+                    }
                 },
                 text = stringRes(R.string.action__cancel),
             )
             ButtonBarButton(
                 onClick = {
-                    scope.launch { prepareAndPerformBackup() }
+                    scope.launch {
+                        val result = runCatching {
+                            withContext(Dispatchers.IO) {
+                                if (backupWorkspace == null || backupWorkspace!!.isClosed()) {
+                                    prepareBackupWorkspace()
+                                }
+                            }
+                            backupWorkspace!!
+                        }
+                        result.onSuccess { workspace ->
+                            when (backupDestination) {
+                                Backup.Destination.FILE_SYS -> {
+                                    backUpToFileSystemLauncher.launch(workspace.zipFile.name)
+                                }
+
+                                Backup.Destination.SHARE_INTENT -> {
+                                    scope.launch {
+                                        val uri = FileProvider.getUriForFile(
+                                            context, Backup.FILE_PROVIDER_AUTHORITY, workspace.zipFile
+                                        )
+                                        val shareIntent = ShareCompat.IntentBuilder(context)
+                                            .setStream(uri)
+                                            .setType(FileRegistry.BackupArchive.mediaType)
+                                            .createChooserIntent()
+                                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        context.startActivity(shareIntent)
+                                    }
+                                }
+                            }
+                        }.onFailure { error ->
+                            flogError { error.stackTraceToString() }
+                            context.showLongToast(R.string.backup_and_restore__back_up__failure, "error_message" to error.message)
+                            withContext(Dispatchers.IO) {
+                                backupWorkspace?.close()
+                            }
+                            backupWorkspace = null
+                        }
+                    }
                 },
                 text = stringRes(R.string.action__back_up),
                 enabled = backupFilesSelector.atLeastOneSelected(),
@@ -285,20 +309,17 @@ fun BackupScreen() = FlorisScreen {
             title = stringRes(R.string.backup_and_restore__back_up__destination),
         ) {
             RadioListItem(
-                onClick = {
-                    backupDestination = Backup.Destination.FILE_SYS
-                },
+                onClick = { backupDestination = Backup.Destination.FILE_SYS },
                 selected = backupDestination == Backup.Destination.FILE_SYS,
                 text = stringRes(R.string.backup_and_restore__back_up__destination_file_sys),
             )
             RadioListItem(
-                onClick = {
-                    backupDestination = Backup.Destination.SHARE_INTENT
-                },
+                onClick = { backupDestination = Backup.Destination.SHARE_INTENT },
                 selected = backupDestination == Backup.Destination.SHARE_INTENT,
                 text = stringRes(R.string.backup_and_restore__back_up__destination_share_intent),
             )
         }
+
         BackupFilesSelector(
             filesSelector = backupFilesSelector,
             title = stringRes(R.string.backup_and_restore__back_up__files),

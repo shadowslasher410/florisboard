@@ -106,12 +106,11 @@ import dev.patrickgold.florisboard.keyboardManager
 import dev.patrickgold.florisboard.lib.observeAsTransformingState
 import dev.patrickgold.florisboard.lib.util.NetworkUtils
 import dev.patrickgold.jetpref.datastore.model.observeAsState
-import java.time.Instant
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.florisboard.lib.android.AndroidKeyguardManager
 import org.florisboard.lib.android.AndroidVersion
-import org.florisboard.lib.android.showShortToastSync
+import org.florisboard.lib.android.showShortToast
 import org.florisboard.lib.android.systemService
 import org.florisboard.lib.compose.LocalLocalizedDateTimeFormatter
 import org.florisboard.lib.compose.autoMirrorForRtl
@@ -128,6 +127,7 @@ import org.florisboard.lib.snygg.ui.SnyggIcon
 import org.florisboard.lib.snygg.ui.SnyggIconButton
 import org.florisboard.lib.snygg.ui.SnyggRow
 import org.florisboard.lib.snygg.ui.SnyggText
+import java.time.Instant
 
 private val ItemWidth = 200.dp
 private val DialogWidth = 240.dp
@@ -275,7 +275,8 @@ fun ClipboardInputLayout(
                     popupItem = item
                 },
                 onClick = {
-                    clipboardManager.pasteItem(item)
+                    scope.launch { clipboardManager.pasteItem(item) }
+
                 },
             ),
         ) {
@@ -522,10 +523,12 @@ fun ClipboardInputLayout(
                                     R.string.clip__pin_item
                                 }),
                             ) {
-                                if (popupItem!!.isPinned) {
-                                    clipboardManager.unpinClip(popupItem!!)
-                                } else {
-                                    clipboardManager.pinClip(popupItem!!)
+                                scope.launch {
+                                    if (popupItem!!.isPinned) {
+                                        clipboardManager.unpinClip(popupItem!!)
+                                    } else {
+                                        clipboardManager.pinClip(popupItem!!)
+                                    }
                                 }
                                 popupItem = null
                             }
@@ -533,14 +536,14 @@ fun ClipboardInputLayout(
                                 icon = Icons.Default.Delete,
                                 text = stringRes(R.string.clip__delete_item),
                             ) {
-                                clipboardManager.deleteClip(popupItem!!, onlyIfUnpinned = false)
+                                scope.launch { clipboardManager.deleteClip(popupItem!!, onlyIfUnpinned = false) }
                                 popupItem = null
                             }
                             PopupAction(
                                 icon = Icons.Outlined.ContentPasteGo,
                                 text = stringRes(R.string.clip__paste_item),
                             ) {
-                                clipboardManager.pasteItem(popupItem!!)
+                                scope.launch { clipboardManager.pasteItem(popupItem!!) }
                                 popupItem = null
                             }
                         }
@@ -593,8 +596,10 @@ fun ClipboardInputLayout(
                                 elementName = FlorisImeUi.ClipboardClearAllDialogButton.elementName,
                                 attributes = mapOf("action" to "yes"),
                                 onClick = {
-                                    clipboardManager.clearExactHistory(filteredHistory.unpinned)
-                                    context.showShortToastSync(R.string.clipboard__cleared_history)
+                                    scope.launch {
+                                        clipboardManager.clearExactHistory(filteredHistory.unpinned)
+                                        context.showShortToast(R.string.clipboard__cleared_history)
+                                    }
                                     showClearAllHistory = false
                                 },
                             ) {

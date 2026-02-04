@@ -39,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -83,18 +84,21 @@ import dev.patrickgold.florisboard.themeManager
 import dev.patrickgold.jetpref.datastore.ui.Preference
 import dev.patrickgold.jetpref.material.ui.JetPrefAlertDialog
 import dev.patrickgold.jetpref.material.ui.JetPrefTextField
-import java.util.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.florisboard.lib.android.showLongToast
 import org.florisboard.lib.compose.FlorisButtonBar
 import org.florisboard.lib.compose.FlorisIconButton
 import org.florisboard.lib.compose.FlorisInfoCard
 import org.florisboard.lib.compose.FlorisOutlinedBox
 import org.florisboard.lib.compose.defaultFlorisOutlinedBox
 import org.florisboard.lib.compose.stringRes
-import org.florisboard.lib.android.showLongToastSync
 import org.florisboard.lib.kotlin.io.deleteContentsRecursively
 import org.florisboard.lib.kotlin.io.subDir
 import org.florisboard.lib.kotlin.io.subFile
 import org.florisboard.lib.kotlin.io.writeJson
+import java.util.UUID
 import kotlin.reflect.KClass
 
 private val TextFieldVerticalPadding = 8.dp
@@ -243,6 +247,7 @@ private fun EditScreen(
 
     val context = LocalContext.current
     val navController = LocalNavController.current
+    val scope = rememberCoroutineScope()
 
     val extEditor = workspace.editor ?: return@FlorisScreen
     var showUnsavedChangesDialog by remember { mutableStateOf(false) }
@@ -263,55 +268,63 @@ private fun EditScreen(
             showInvalidMetadataDialog = true
             return
         }
-        val manifest = extEditor.build()
-        workspace.saverDir.deleteContentsRecursively()
-        val manifestFile = workspace.saverDir.subFile(ExtensionDefaults.MANIFEST_FILE_NAME)
-        manifestFile.writeJson(manifest, ExtensionJsonConfig)
-        when (extEditor) {
-            is ThemeExtensionEditor -> {
-                // TODO: this is hacky
-                val fonts = workspace.extDir.subDir("fonts")
-                if (fonts.exists()) {
-                    fonts.copyRecursively(workspace.saverDir.subDir("fonts"), overwrite = true)
-                }
-                val images = workspace.extDir.subDir("images")
-                if (images.exists()) {
-                    images.copyRecursively(workspace.saverDir.subDir("images"), overwrite = true)
-                }
-                for (theme in extEditor.themes) {
-                    val stylesheetFile = workspace.saverDir.subFile(theme.stylesheetPath())
-                    stylesheetFile.parentFile?.mkdirs()
-                    val stylesheetEditor = theme.stylesheetEditor
-                    if (stylesheetEditor != null) {
-                        runCatching {
-                            val stylesheet = stylesheetEditor.build().toJson(PrettyPrintConfig).getOrThrow()
-                            stylesheetFile.writeText(stylesheet)
-                        }.onFailure {
-                            // TODO: better error handling
-                            context.showLongToastSync(it.message.toString())
-                            return
-                        }
-                    } else {
-                        val unmodifiedStylesheetFile = workspace.extDir.subFile(theme.stylesheetPath())
-                        if (unmodifiedStylesheetFile.exists()) {
-                            unmodifiedStylesheetFile.copyTo(stylesheetFile, overwrite = true)
+
+        scope.launch(Dispatchers.IO) {
+            val manifest = extEditor.build()
+            workspace.saverDir.deleteContentsRecursively()
+            val manifestFile = workspace.saverDir.subFile(ExtensionDefaults.MANIFEST_FILE_NAME)
+            manifestFile.writeJson(manifest, ExtensionJsonConfig)
+            when (extEditor) {
+                is ThemeExtensionEditor -> {
+                    // TODO: this is hacky
+                    val fonts = workspace.extDir.subDir("fonts")
+                    if (fonts.exists()) {
+                        fonts.copyRecursively(workspace.saverDir.subDir("fonts"), overwrite = true)
+                    }
+                    val images = workspace.extDir.subDir("images")
+                    if (images.exists()) {
+                        images.copyRecursively(workspace.saverDir.subDir("images"), overwrite = true)
+                    }
+                    for (theme in extEditor.themes) {
+                        val stylesheetFile = workspace.saverDir.subFile(theme.stylesheetPath())
+                        stylesheetFile.parentFile?.mkdirs()
+                        val stylesheetEditor = theme.stylesheetEditor
+                        if (stylesheetEditor != null) {
+                            val result = runCatching {
+                                val stylesheet = stylesheetEditor.build().toJson(PrettyPrintConfig).getOrThrow()
+                                stylesheetFile.writeText(stylesheet)
+                            }
+                            if (result.isFailure) {
+                                withContext(Dispatchers.Main) {
+                                    // TODO: better error handling
+                                    context.showLongToast(result.exceptionOrNull()?.message.toString())
+                                }
+                                return@launch
+                            }
+                        } else {
+                            val unmodifiedStylesheetFile = workspace.extDir.subFile(theme.stylesheetPath())
+                            if (unmodifiedStylesheetFile.exists()) {
+                                unmodifiedStylesheetFile.copyTo(stylesheetFile, overwrite = true)
+                            }
                         }
                     }
                 }
+                else -> { }
             }
-            else -> { }
+            val flexArchiveName = ExtensionDefaults.createFlexName(extEditor.meta.id)
+            val flexArchiveFile = workspace.dir.subFile(flexArchiveName)
+            ZipUtils.zip(workspace.saverDir, flexArchiveFile)
+            val sourceRef = if (isCreateExt) {
+                FlorisRef.internal(ExtensionManager.IME_THEME_PATH).subRef(flexArchiveName)
+            } else {
+                workspace.ext!!.sourceRef!!
+            }
+            flexArchiveFile.copyTo(sourceRef.absoluteFile(context), overwrite = true)
+            workspace.close() //workspace.markAsSaved()
+            withContext(Dispatchers.Main) {
+                navController.popBackStack()
+            }
         }
-        val flexArchiveName = ExtensionDefaults.createFlexName(extEditor.meta.id)
-        val flexArchiveFile = workspace.dir.subFile(flexArchiveName)
-        ZipUtils.zip(workspace.saverDir, flexArchiveFile)
-        val sourceRef = if (isCreateExt) {
-            FlorisRef.internal(ExtensionManager.IME_THEME_PATH).subRef(flexArchiveName)
-        } else {
-            workspace.ext!!.sourceRef!!
-        }
-        flexArchiveFile.copyTo(sourceRef.absoluteFile(context), overwrite = true)
-        workspace.close()
-        navController.popBackStack()
     }
 
     navigationIcon {
@@ -324,12 +337,12 @@ private fun EditScreen(
     bottomBar {
         FlorisButtonBar {
             ButtonBarSpacer()
-            ButtonBarTextButton(text = stringRes(R.string.action__cancel)) {
-                handleBackPress()
-            }
-            ButtonBarButton(text = stringRes(R.string.action__save)) {
-                handleSave()
-            }
+            ButtonBarTextButton(
+                onClick = { handleBackPress() },
+                text = stringRes(R.string.action__cancel))
+            ButtonBarButton(
+                onClick = { handleSave() },
+                text = stringRes(R.string.action__save))
         }
     }
 
@@ -651,6 +664,9 @@ private fun <T : ExtensionComponent> CreateComponentScreen(
     var newAuthors by rememberSaveable { mutableStateOf("") }
     val newAuthorsValidation = rememberValidationResult(ExtensionValidation.ComponentAuthors, newAuthors)
 
+    val scope = rememberCoroutineScope()
+
+
     fun handleBackPress() {
         workspace.currentAction = null
     }
@@ -666,7 +682,11 @@ private fun <T : ExtensionComponent> CreateComponentScreen(
                     when (createFrom) {
                         CreateFrom.EMPTY -> {
                             if (editor.themes.any { it.id == newId.trim() }) {
-                                context.showLongToastSync("A theme with this ID already exists!")
+                                scope.launch {
+                                    withContext(Dispatchers.Main) {
+                                        context.showLongToast("A theme with this ID already exists!")
+                                    }
+                                }
                             } else {
                                 val componentEditor = ThemeExtensionComponentEditor(
                                     id = newId.trim(),
@@ -760,6 +780,21 @@ private fun <T : ExtensionComponent> CreateComponentScreen(
         }
     }
 
+    bottomBar {
+        FlorisButtonBar {
+            ButtonBarSpacer()
+            ButtonBarTextButton(text = stringRes(R.string.action__cancel)) {
+                handleBackPress()
+            }
+            ButtonBarButton(
+                text = stringRes(R.string.action__create),
+                enabled = hasSufficientInfoForCreating(),
+            ) {
+                handleCreate()
+            }
+        }
+    }
+
     content {
         BackHandler {
             handleBackPress()
@@ -820,6 +855,13 @@ private fun <T : ExtensionComponent> CreateComponentScreen(
                     onValueChange = { newLabel = it },
                     singleLine = true,
                 )
+                Validation(showValidationErrors, newLabelValidation)
+
+            }
+            DialogProperty(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                text = stringRes(R.string.ext__meta__authors),
+            ) {
                 Validation(showValidationErrors, newLabelValidation)
 
             }

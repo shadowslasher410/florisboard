@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -54,7 +55,10 @@ import dev.patrickgold.florisboard.lib.ext.ExtensionComponentName
 import dev.patrickgold.jetpref.datastore.ui.ExperimentalJetPrefDatastoreUi
 import dev.patrickgold.jetpref.datastore.ui.Preference
 import dev.patrickgold.jetpref.material.ui.JetPrefListItem
-import org.florisboard.lib.android.showLongToastSync
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.florisboard.lib.android.showLongToast
 import org.florisboard.lib.compose.FlorisOutlinedBox
 import org.florisboard.lib.compose.FlorisTextButton
 import org.florisboard.lib.compose.defaultFlorisOutlinedBox
@@ -78,6 +82,7 @@ fun LanguagePackManagerScreen(action: LanguagePackManagerScreenAction?) = Floris
     val navController = LocalNavController.current
     val context = LocalContext.current
     val extensionManager by context.extensionManager()
+    val scope = rememberCoroutineScope()
 
     val indexedLanguagePackExtensions by extensionManager.languagePacks.collectAsState()
     val selectedManagerLanguagePackId = remember { mutableStateOf<ExtensionComponentName?>(null) }
@@ -195,15 +200,20 @@ fun LanguagePackManagerScreen(action: LanguagePackManagerScreenAction?) = Floris
         if (languagePackExtToDelete != null) {
             FlorisConfirmDeleteDialog(
                 onConfirm = {
-                    runCatching {
-                        extensionManager.delete(languagePackExtToDelete!!)
-                    }.onFailure { error ->
-                        context.showLongToastSync(
-                            R.string.error__snackbar_message,
-                            "error_message" to error.localizedMessage,
-                        )
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            runCatching {
+                                extensionManager.delete(languagePackExtToDelete!!)
+                            }
+                        }
+                        result.onFailure { error ->
+                            context.showLongToast(
+                                R.string.error__snackbar_message,
+                                "error_message" to error.localizedMessage,
+                            )
+                        }
+                        languagePackExtToDelete = null
                     }
-                    languagePackExtToDelete = null
                 },
                 onDismiss = { languagePackExtToDelete = null },
                 what = languagePackExtToDelete!!.meta.title,

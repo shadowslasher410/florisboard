@@ -36,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +54,10 @@ import dev.patrickgold.florisboard.lib.NATIVE_NULLPTR
 import dev.patrickgold.florisboard.lib.cache.CacheManager
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
 import dev.patrickgold.florisboard.lib.io.FileRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.florisboard.lib.android.showLongToast
 import org.florisboard.lib.compose.FlorisBulletSpacer
 import org.florisboard.lib.compose.FlorisButtonBar
 import org.florisboard.lib.compose.FlorisOutlinedBox
@@ -60,7 +65,6 @@ import org.florisboard.lib.compose.FlorisOutlinedButton
 import org.florisboard.lib.compose.defaultFlorisOutlinedBox
 import org.florisboard.lib.compose.florisHorizontalScroll
 import org.florisboard.lib.compose.stringRes
-import org.florisboard.lib.android.showLongToastSync
 import org.florisboard.lib.kotlin.resultOk
 
 enum class ExtensionImportScreenType(
@@ -98,6 +102,7 @@ fun ExtensionImportScreen(type: ExtensionImportScreenType, initUuid: String?) = 
     val context = LocalContext.current
     val cacheManager by context.cacheManager()
     val extensionManager by context.extensionManager()
+    val scope = rememberCoroutineScope()
 
     fun getSkipReason(fileInfo: CacheManager.FileInfo): Int {
         return when {
@@ -141,8 +146,14 @@ fun ExtensionImportScreen(type: ExtensionImportScreenType, initUuid: String?) = 
             //  was canceled (mostly by pressing the back button), so
             //  we don't display an error message here.
             if (uriList.isEmpty()) return@rememberLauncherForActivityResult
-            importResult?.getOrNull()?.close()
-            importResult = runCatching { cacheManager.readFromUriIntoCache(uriList) }.mapSkipReasons()
+            scope.launch {
+                withContext(Dispatchers.IO) {
+                    importResult?.getOrNull()?.close()
+                }
+                importResult = withContext(Dispatchers.IO) {
+                    runCatching { cacheManager.readFromUriIntoCache(uriList) }
+                }.mapSkipReasons()
+            }
         },
     )
 
@@ -152,8 +163,12 @@ fun ExtensionImportScreen(type: ExtensionImportScreenType, initUuid: String?) = 
             ButtonBarTextButton(
                 text = stringRes(R.string.action__cancel),
             ) {
-                importResult?.getOrNull()?.close()
-                navController.popBackStack()
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        importResult?.getOrNull()?.close()
+                    }
+                    navController.popBackStack()
+                }
             }
             val enabled = remember(importResult) {
                 importResult?.getOrNull()?.takeIf { workspace ->
@@ -165,33 +180,43 @@ fun ExtensionImportScreen(type: ExtensionImportScreenType, initUuid: String?) = 
                 enabled = enabled,
             ) {
                 val workspace = importResult!!.getOrThrow()
-                runCatching {
-                    for (fileInfo in workspace.inputFileInfos) {
-                        if (fileInfo.skipReason != NATIVE_NULLPTR.toInt()) {
-                            continue
-                        }
-                        val ext = fileInfo.ext
-                        when (type) {
-                            ExtensionImportScreenType.EXT_ANY -> {
-                                ext?.let { extensionManager.import(it) }
-                            }
-                            ExtensionImportScreenType.EXT_KEYBOARD -> {
-                                ext.takeIf { it is KeyboardExtension }?.let { extensionManager.import(it) }
-                            }
-                            ExtensionImportScreenType.EXT_THEME -> {
-                                ext.takeIf { it is ThemeExtension }?.let { extensionManager.import(it) }
-                            }
-                            ExtensionImportScreenType.EXT_LANGUAGEPACK -> {
-                                ext.takeIf { it is LanguagePackExtension }?.let { extensionManager.import(it) }
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching {
+                            for (fileInfo in workspace.inputFileInfos) {
+                                if (fileInfo.skipReason != NATIVE_NULLPTR.toInt()) {
+                                    continue
+                                }
+                                val ext = fileInfo.ext
+                                when (type) {
+                                    ExtensionImportScreenType.EXT_ANY -> {
+                                        ext?.let { extensionManager.import(it) }
+                                    }
+                                    ExtensionImportScreenType.EXT_KEYBOARD -> {
+                                        ext.takeIf { it is KeyboardExtension }?.let { extensionManager.import(it) }
+                                    }
+                                    ExtensionImportScreenType.EXT_THEME -> {
+                                        ext.takeIf { it is ThemeExtension }?.let { extensionManager.import(it) }
+                                    }
+                                    ExtensionImportScreenType.EXT_LANGUAGEPACK -> {
+                                        ext.takeIf { it is LanguagePackExtension }?.let { extensionManager.import(it) }
+                                    }
+                                }
                             }
                         }
                     }
-                }.onSuccess {
-                    workspace.close()
-                    context.showLongToastSync(R.string.ext__import__success)
-                    navController.popBackStack()
-                }.onFailure { error ->
-                    context.showLongToastSync(R.string.ext__import__failure, "error_message" to error.localizedMessage)
+                    if (result.isSuccess) {
+                        withContext(Dispatchers.IO) {
+                            workspace.close()
+                        }
+                        context.showLongToast(R.string.ext__import__success)
+                        navController.popBackStack()
+                    } else {
+                        context.showLongToast(
+                            R.string.ext__import__failure,
+                            "error_message" to (result.exceptionOrNull()?.localizedMessage ?: "null"),
+                        )
+                    }
                 }
             }
         }

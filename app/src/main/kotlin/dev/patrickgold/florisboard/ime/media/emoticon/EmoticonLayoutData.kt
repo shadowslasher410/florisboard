@@ -17,6 +17,8 @@
 package dev.patrickgold.florisboard.ime.media.emoticon
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import java.io.File
 
 typealias EmoticonLayoutDataArrangement = List<List<EmoticonKeyData>>
 
@@ -29,9 +31,13 @@ data class EmoticonLayoutData(
 ) {
     companion object {
         fun fromJsonFile(path: String): EmoticonLayoutData? {
-            return null /*AssetManager.defaultOrNull()
-                ?.loadJsonAsset<EmoticonLayoutData>(FlorisRef.assets(path))
-                ?.getOrNull()*/
+            return try {
+                val jsonContent = File(path).readText()
+                Json.decodeFromString(serializer(), jsonContent)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
         }
     }
 }

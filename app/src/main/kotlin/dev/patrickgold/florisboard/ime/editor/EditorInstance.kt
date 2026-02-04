@@ -41,9 +41,8 @@ import dev.patrickgold.florisboard.keyboardManager
 import dev.patrickgold.florisboard.lib.ext.ExtensionComponentName
 import dev.patrickgold.florisboard.nlpManager
 import dev.patrickgold.florisboard.subtypeManager
+import org.florisboard.lib.android.showShortToast
 import java.util.concurrent.atomic.AtomicInteger
-import kotlinx.coroutines.runBlocking
-import org.florisboard.lib.android.showShortToastSync
 
 class EditorInstance(context: Context) : AbstractEditorInstance(context) {
     companion object {
@@ -111,7 +110,6 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
         activeState.isComposingEnabled = when (keyboardMode) {
             KeyboardMode.NUMERIC,
             KeyboardMode.PHONE,
-            KeyboardMode.PHONE2,
             -> false
             else -> activeState.keyVariation != KeyVariation.PASSWORD &&
                 prefs.suggestion.enabled.get()// &&
@@ -340,7 +338,7 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
      *
      * @return True on success, false if an error occurred or the input connection is invalid.
      */
-    fun deleteBackwards(unit: OperationUnit): Boolean {
+    suspend fun deleteBackwards(unit: OperationUnit): Boolean {
         val content = activeContent
         if (unit == OperationUnit.CHARACTERS) {
             if (phantomSpace.isActive && content.currentWord.isValid && prefs.glide.immediateBackspaceDeletesWord.get()) {
@@ -351,9 +349,7 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
         phantomSpace.setInactive()
         return if (content.selection.isSelectionMode) {
             commitText("")
-        } else runBlocking {
-            deleteAroundCursor(unit, OperationScope.BEFORE_CURSOR, n = 1)
-        }
+        } else deleteAroundCursor(unit, OperationScope.BEFORE_CURSOR, n = 1)
     }
 
     /**
@@ -363,18 +359,16 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
      *
      * @return True on success, false if an error occurred or the input connection is invalid.
      */
-    fun deleteForwards(unit: OperationUnit): Boolean {
+    suspend fun deleteForwards(unit: OperationUnit): Boolean {
         val content = activeContent
         autoSpace.setInactive()
         phantomSpace.setInactive()
         return if (content.selection.isSelectionMode) {
             commitText("")
-        } else runBlocking {
-            deleteAroundCursor(unit, OperationScope.AFTER_CURSOR, n = 1)
-        }
+        } else deleteAroundCursor(unit, OperationScope.AFTER_CURSOR, n = 1)
     }
 
-    fun setSelectionSurrounding(n: Int, unit: OperationUnit, scope: OperationScope): Boolean {
+    suspend fun setSelectionSurrounding(n: Int, unit: OperationUnit, scope: OperationScope): Boolean {
         autoSpace.setInactive()
         phantomSpace.setInactive()
         val content = activeContent
@@ -387,11 +381,9 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
                     return setSelection(selection.end, selection.end)
                 }
                 val textToAnalyze = content.text.take(content.localSelection.end)
-                val length = runBlocking {
-                    when (unit) {
-                        OperationUnit.CHARACTERS -> breakIterators.measureLastUChars(textToAnalyze, n)
-                        OperationUnit.WORDS -> breakIterators.measureLastUWords(textToAnalyze, n)
-                    }
+                val length = when (unit) {
+                    OperationUnit.CHARACTERS -> breakIterators.measureLastUChars(textToAnalyze, n)
+                    OperationUnit.WORDS -> breakIterators.measureLastUWords(textToAnalyze, n)
                 }
                 return setSelection((selection.end - length).coerceAtLeast(safeEditorBounds.start), selection.end)
             }
@@ -400,11 +392,9 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
                     return setSelection(selection.start, selection.start)
                 }
                 val textToAnalyze = content.text.substring(content.localSelection.start)
-                val length = runBlocking {
-                    when (unit) {
-                        OperationUnit.CHARACTERS -> breakIterators.measureUChars(textToAnalyze, n)
-                        OperationUnit.WORDS -> breakIterators.measureUWords(textToAnalyze, n)
-                    }
+                val length = when (unit) {
+                    OperationUnit.CHARACTERS -> breakIterators.measureUChars(textToAnalyze, n)
+                    OperationUnit.WORDS -> breakIterators.measureUWords(textToAnalyze, n)
                 }
                 return setSelection(selection.start, (selection.start + length).coerceAtMost(safeEditorBounds.end))
             }
@@ -417,14 +407,14 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
      *
      * @return True on success, false if an error occurred or the input connection is invalid.
      */
-    fun performClipboardCut(): Boolean {
+    suspend fun performClipboardCut(): Boolean {
         autoSpace.setInactive()
         phantomSpace.setInactive()
         val text = activeContent.selectedText.ifBlank { currentInputConnection()?.getSelectedText(0) }
         if (text != null) {
             clipboardManager.addNewPlaintext(text.toString())
         } else {
-            appContext.showShortToastSync("Failed to retrieve selected text requested to cut: Eiter selection state is invalid or an error occurred within the input connection.")
+            appContext.showShortToast("Failed to retrieve selected text requested to cut: Eiter selection state is invalid or an error occurred within the input connection.")
         }
         return deleteBackwards(OperationUnit.CHARACTERS)
     }
@@ -435,14 +425,14 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
      *
      * @return True on success, false if an error occurred or the input connection is invalid.
      */
-    fun performClipboardCopy(): Boolean {
+    suspend fun performClipboardCopy(): Boolean {
         autoSpace.setInactive()
         phantomSpace.setInactive()
         val text = activeContent.selectedText.ifBlank { currentInputConnection()?.getSelectedText(0) }
         if (text != null) {
             clipboardManager.addNewPlaintext(text.toString())
         } else {
-            appContext.showShortToastSync("Failed to retrieve selected text requested to copy: Eiter selection state is invalid or an error occurred within the input connection.")
+            appContext.showShortToast("Failed to retrieve selected text requested to copy: Eiter selection state is invalid or an error occurred within the input connection.")
         }
         val activeSelection = activeContent.selection
         return setSelection(activeSelection.end, activeSelection.end)
@@ -454,12 +444,12 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
      *
      * @return True on success, false if an error occurred or the input connection is invalid.
      */
-    fun performClipboardPaste(): Boolean {
+    suspend fun performClipboardPaste(): Boolean {
         autoSpace.setInactive()
         phantomSpace.setInactive()
         return commitClipboardItem(clipboardManager.primaryClip).also { result ->
             if (!result) {
-                appContext.showShortToastSync("Failed to paste item.")
+                appContext.showShortToast("Failed to paste item.")
             }
         }
     }
@@ -572,9 +562,6 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
         val isActive: Boolean
             get() = state.get() and F_IS_ACTIVE != 0
 
-        val isInactive: Boolean
-            get() = !isActive
-
         fun setActive(stayActiveNextUpdate: Boolean = true) {
             state.set(F_IS_ACTIVE or (if (stayActiveNextUpdate) F_STAY_ACTIVE_NEXT_UPDATE else 0))
         }
@@ -643,9 +630,6 @@ class EditorInstance(context: Context) : AbstractEditorInstance(context) {
 
         val isActive: Boolean
             get() = state.get() > 0
-
-        val isInactive: Boolean
-            get() = !isActive
 
         fun begin() {
             state.incrementAndGet()

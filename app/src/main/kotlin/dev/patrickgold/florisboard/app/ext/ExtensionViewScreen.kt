@@ -37,7 +37,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,7 +60,10 @@ import dev.patrickgold.florisboard.lib.ext.Extension
 import dev.patrickgold.florisboard.lib.ext.ExtensionMaintainer
 import dev.patrickgold.florisboard.lib.ext.ExtensionMeta
 import dev.patrickgold.florisboard.lib.io.FlorisRef
-import org.florisboard.lib.android.showLongToastSync
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.florisboard.lib.android.showLongToast
 import org.florisboard.lib.compose.FlorisOutlinedButton
 import org.florisboard.lib.compose.defaultFlorisOutlinedBox
 import org.florisboard.lib.compose.stringRes
@@ -83,6 +88,13 @@ private fun ViewScreen(ext: Extension) = FlorisScreen {
     val navController = LocalNavController.current
     val context = LocalContext.current
     val extensionManager by context.extensionManager()
+    val scope = rememberCoroutineScope()
+
+    val canDelete by produceState(initialValue = false, ext) {
+        value = withContext(Dispatchers.IO) {
+            extensionManager.canDelete(ext)
+        }
+    }
 
     var extToDelete by remember { mutableStateOf<Extension?>(null) }
 
@@ -141,11 +153,9 @@ private fun ViewScreen(ext: Extension) = FlorisScreen {
                 Text(text = ext.meta.license)
             }
             Row(modifier = Modifier.fillMaxWidth()) {
-                if (extensionManager.canDelete(ext)) {
+                if (canDelete) {
                     FlorisOutlinedButton(
-                        onClick = {
-                            extToDelete = ext
-                        },
+                        onClick = { scope.launch { extToDelete = ext } },
                         icon = Icons.Default.Delete,
                         text = stringRes(R.string.action__delete),
                         colors = ButtonDefaults.outlinedButtonColors(
@@ -155,9 +165,7 @@ private fun ViewScreen(ext: Extension) = FlorisScreen {
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 FlorisOutlinedButton(
-                    onClick = {
-                        navController.navigate(Routes.Ext.Export(ext.meta.id))
-                    },
+                    onClick = { scope.launch { navController.navigate(Routes.Ext.Export(ext.meta.id)) } },
                     icon = Icons.Default.Share,
                     text = stringRes(R.string.action__export),
                 )
@@ -197,17 +205,22 @@ private fun ViewScreen(ext: Extension) = FlorisScreen {
         if (extToDelete != null) {
             FlorisConfirmDeleteDialog(
                 onConfirm = {
-                    runCatching {
-                        extensionManager.delete(extToDelete!!)
-                    }.onSuccess {
-                        navController.popBackStack()
-                    }.onFailure { error ->
-                        context.showLongToastSync(
-                            R.string.error__snackbar_message,
-                            "error_message" to error.localizedMessage,
-                        )
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            runCatching { extensionManager.delete(extToDelete!!) }
+                        }
+                        withContext(Dispatchers.Main) {
+                            result.onSuccess {
+                                navController.popBackStack()
+                            }.onFailure { error ->
+                                context.showLongToast(
+                                    R.string.error__snackbar_message,
+                                    "error_message" to error.localizedMessage,
+                                )
+                            }
+                            extToDelete = null
+                        }
                     }
-                    extToDelete = null
                 },
                 onDismiss = { extToDelete = null },
                 what = extToDelete!!.meta.title,
