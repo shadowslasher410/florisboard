@@ -28,9 +28,12 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -51,10 +54,12 @@ import dev.patrickgold.florisboard.lib.FlorisLocale
 import dev.patrickgold.florisboard.nlpManager
 import dev.patrickgold.florisboard.themeManager
 import dev.patrickgold.jetpref.datastore.model.observeAsState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.florisboard.lib.android.AndroidVersion
 import org.florisboard.lib.snygg.SnyggMissingSchemaException
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
 
 private val CardBackground = Color.Black.copy(0.6f)
 private val DateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss", FlorisLocale.default().base)
@@ -175,25 +180,26 @@ private fun DevtoolsLastLayoutComputationOverlay(debugLayoutResult: DebugLayoutC
 
 @Composable
 private fun DevtoolsSpellingOverlay() {
-    val context = LocalContext.current
-    val nlpManager by context.nlpManager()
+    val nlpManager by LocalContext.current.nlpManager()
 
     val debugOverlayVersion by nlpManager.debugOverlayVersion.collectAsState()
     val suggestionsInfos = remember(debugOverlayVersion) { nlpManager.debugOverlaySuggestionsInfos.snapshot() }
 
-    val sortedEntries = suggestionsInfos.entries.sortedByDescending { it.key }
-    DevtoolsOverlayBox(title = "Spelling overlay (${sortedEntries.size})") {
-        for ((timestamp, wordInfoPair) in sortedEntries) {
-            val (word, info) = wordInfoPair
-            val suggestions = info.suggestions()
-            Column(modifier = Modifier.padding(horizontal = 8.dp)) {
+    data class SpellingInfo(
+        val date: String,
+        val word: String,
+        val details: String,
+    )
+
+    var processedInfo by remember { mutableStateOf<List<SpellingInfo>>(emptyList()) }
+
+    LaunchedEffect(suggestionsInfos) {
+        withContext(Dispatchers.IO) {
+            val sortedEntries = suggestionsInfos.entries.sortedByDescending { it.key }
+            processedInfo = sortedEntries.map { (timestamp, wordInfoPair) ->
+                val (word, info) = wordInfoPair
+                val suggestions = info.suggestions()
                 val date = DateFormat.format(Date(timestamp))
-                Text(
-                    text = "$date - \"$word\"",
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                )
                 val details = buildString {
                     appendLine("isTypo: ${info.isTypo} | isGrammarError: ${info.isGrammarError}")
                     if (info.isTypo || info.isGrammarError) {
@@ -205,8 +211,22 @@ private fun DevtoolsSpellingOverlay() {
                         }
                     }
                 }.prependIndent("  ")
+                SpellingInfo(date, word, details)
+            }
+        }
+    }
+
+    DevtoolsOverlayBox(title = "Spelling overlay (${processedInfo.size})") {
+        for (info in processedInfo) {
+            Column(modifier = Modifier.padding(horizontal = 8.dp)) {
                 Text(
-                    text = details,
+                    text = "${info.date} - \"${info.word}\"",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+                Text(
+                    text = info.details,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
                 )

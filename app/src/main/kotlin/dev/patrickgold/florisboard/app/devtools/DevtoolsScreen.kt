@@ -35,7 +35,9 @@ import dev.patrickgold.jetpref.datastore.model.observeAsState
 import dev.patrickgold.jetpref.datastore.ui.Preference
 import dev.patrickgold.jetpref.datastore.ui.PreferenceGroup
 import dev.patrickgold.jetpref.datastore.ui.SwitchPreference
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.florisboard.lib.android.AndroidSettings
 import org.florisboard.lib.android.AndroidVersion
 import org.florisboard.lib.android.showLongToast
@@ -179,33 +181,39 @@ fun DevtoolsScreen() = FlorisScreen {
             Preference(
                 title = stringRes(R.string.devtools__android_settings_global__title),
                 onClick = {
-                    navController.navigate(
-                        Routes.Devtools.AndroidSettings(AndroidSettings.Global.groupId)
-                    )
+                    scope.launch {
+                        navController.navigate(
+                            Routes.Devtools.AndroidSettings(AndroidSettings.Global.groupId)
+                        )
+                    }
                 },
                 enabledIf = { prefs.devtools.enabled isEqualTo true },
             )
             Preference(
                 title = stringRes(R.string.devtools__android_settings_secure__title),
                 onClick = {
-                    navController.navigate(
-                        Routes.Devtools.AndroidSettings(AndroidSettings.Secure.groupId)
-                    )
+                    scope.launch {
+                        navController.navigate(
+                            Routes.Devtools.AndroidSettings(AndroidSettings.Secure.groupId)
+                        )
+                    }
                 },
                 enabledIf = { prefs.devtools.enabled isEqualTo true },
             )
             Preference(
                 title = stringRes(R.string.devtools__android_settings_system__title),
                 onClick = {
-                    navController.navigate(
-                        Routes.Devtools.AndroidSettings(AndroidSettings.System.groupId)
-                    )
+                    scope.launch {
+                        navController.navigate(
+                            Routes.Devtools.AndroidSettings(AndroidSettings.System.groupId)
+                        )
+                    }
                 },
                 enabledIf = { prefs.devtools.enabled isEqualTo true },
             )
             Preference(
                 title = stringRes(R.string.devtools__android_locales__title),
-                onClick = { navController.navigate(Routes.Devtools.AndroidLocales) },
+                onClick = { scope.launch { navController.navigate(Routes.Devtools.AndroidLocales) } },
                 enabledIf = { prefs.devtools.enabled isEqualTo true },
             )
         }
@@ -252,11 +260,19 @@ fun DevtoolsScreen() = FlorisScreen {
         if (showDialog) {
             FlorisConfirmDeleteDialog(
                 onConfirm = {
-                    DictionaryManager.default().let {
-                        it.loadUserDictionariesIfNecessary()
-                        it.florisUserDictionaryDao()?.deleteAll()
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val dictionaryManager = DictionaryManager.default()
+                                dictionaryManager.loadUserDictionariesIfNecessary()
+                                dictionaryManager.florisUserDictionaryDao()?.deleteAll()
+                            }
+                        }
+                        result.onFailure {
+                            context.showLongToast(R.string.error__snackbar_message, "error_message" to it.localizedMessage)
+                        }
+                        setShowDialog(false)
                     }
-                    setShowDialog(false)
                 },
                 onDismiss = { setShowDialog(false) },
                 what = FlorisUserDictionaryDatabase.DB_FILE_NAME,

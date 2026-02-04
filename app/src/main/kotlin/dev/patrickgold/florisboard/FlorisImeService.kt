@@ -65,9 +65,10 @@ import dev.patrickgold.florisboard.lib.util.launchActivity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import org.florisboard.lib.android.AndroidInternalR
 import org.florisboard.lib.android.AndroidVersion
-import org.florisboard.lib.android.showShortToastSync
+import org.florisboard.lib.android.showShortToast
 import org.florisboard.lib.android.systemServiceOrNull
 import org.florisboard.lib.kotlin.collectIn
 import org.florisboard.lib.kotlin.collectLatestIn
@@ -188,7 +189,7 @@ class FlorisImeService : LifecycleInputMethodService() {
                     return imm?.switchToLastInputMethod(window.attributes.token) == true
                 }
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             flogError { "Unable to switch to the previous IME" }
             imm?.showInputMethodPicker()
         }
@@ -214,7 +215,7 @@ class FlorisImeService : LifecycleInputMethodService() {
                     return imm?.switchToNextInputMethod(window.attributes.token, false) == true
                 }
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             flogError { "Unable to switch to the next IME" }
             imm?.showInputMethodPicker()
         }
@@ -251,13 +252,14 @@ class FlorisImeService : LifecycleInputMethodService() {
                 }
             }
         }
-        showShortToastSync("Failed to find voice IME, do you have one installed?")
+        lifecycleScope.launch { showShortToast("Failed to find voice IME, do you have one installed?") }
         return false
     }
 
     private val prefs by FlorisPreferenceStore
     val editorInstance by editorInstance()
     private val keyboardManager by keyboardManager()
+    @Suppress("unused")
     private val nlpManager by nlpManager()
     private val subtypeManager by subtypeManager()
     private val themeManager by themeManager()

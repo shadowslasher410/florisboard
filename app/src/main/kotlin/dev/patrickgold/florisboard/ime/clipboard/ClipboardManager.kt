@@ -42,7 +42,7 @@ import org.florisboard.lib.android.AndroidClipboardManager
 import org.florisboard.lib.android.AndroidClipboardManager_OnPrimaryClipChangedListener
 import org.florisboard.lib.android.clearPrimaryClipAnyApi
 import org.florisboard.lib.android.setOrClearPrimaryClip
-import org.florisboard.lib.android.showShortToastSync
+import org.florisboard.lib.android.showShortToast
 import org.florisboard.lib.android.systemService
 import org.florisboard.lib.kotlin.tryOrNull
 
@@ -139,7 +139,7 @@ class ClipboardManager(
     private fun updateHistory(items: List<ClipboardItem>) {
         val itemsSorted = items.sortedByDescending { it.creationTimestampMs }
         val clipHistory = ClipboardHistory(itemsSorted)
-        enforceHistoryLimit(clipHistory)
+        ioScope.launch { enforceHistoryLimit(clipHistory) }
         historyFlow.value = clipHistory
     }
 
@@ -257,9 +257,7 @@ class ClipboardManager(
             val nToRemove = nonPinnedItems.size - prefs.clipboard.historySizeLimit.get()
             if (nToRemove > 0) {
                 val itemsToRemove = nonPinnedItems.asReversed().filterIndexed { n, _ -> n < nToRemove }
-                ioScope.launch {
-                    clipHistoryDao?.delete(itemsToRemove)
-                }
+                clipHistoryDao?.delete(itemsToRemove)
             }
         }
     }
@@ -277,57 +275,45 @@ class ClipboardManager(
             itemsToRemove.addAll(sensitiveData.filter { it.creationTimestampMs < expiryTime })
         }
         if (itemsToRemove.isNotEmpty()) {
-            ioScope.launch {
-                clipHistoryDao?.delete(itemsToRemove.toList())
-            }
+            clipHistoryDao?.delete(itemsToRemove.toList())
         }
     }
 
     private fun moveToTheBeginning(oldItem: ClipboardItem, newItem: ClipboardItem) {
-        ioScope.launch {
-            clipHistoryDao?.delete(oldItem.id)
-            clipHistoryDao?.insert(newItem)
-        }
+        clipHistoryDao?.delete(oldItem.id)
+        clipHistoryDao?.insert(newItem)
     }
 
     fun insertClip(item: ClipboardItem) {
-        ioScope.launch {
-            val id = clipHistoryDao?.insert(item)
-            item.id = id ?: 0
-        }
+        val id = clipHistoryDao?.insert(item)
+        item.id = id ?: 0
     }
 
     fun clearExactHistory(items: List<ClipboardItem>) {
-        ioScope.launch {
-            for (item in items) {
-                item.close(appContext)
-            }
-            clipHistoryDao?.delete(items)
+        for (item in items) {
+            item.close(appContext)
         }
+        clipHistoryDao?.delete(items)
     }
 
     /**
      * Clears all unpinned items from the clipboard history
      */
     fun clearHistory() {
-        ioScope.launch {
-            for (item in currentHistory.all) {
-                item.close(appContext)
-            }
-            clipHistoryDao?.deleteAllUnpinned()
+        for (item in currentHistory.all) {
+            item.close(appContext)
         }
+        clipHistoryDao?.deleteAllUnpinned()
     }
 
     /**
      * Clears the full clipboard history
      */
     fun clearFullHistory() {
-        ioScope.launch {
-            for (item in currentHistory.all) {
-                item.close(appContext)
-            }
-            clipHistoryDao?.deleteAll()
+        for (item in currentHistory.all) {
+            item.close(appContext)
         }
+        clipHistoryDao?.deleteAll()
     }
 
 
@@ -337,50 +323,40 @@ class ClipboardManager(
      * @param items the [ClipboardItem] list with the new items
      */
     fun restoreHistory(items: List<ClipboardItem>) {
-        ioScope.launch {
-            val currentHistory = currentHistory.all
-            for (item in items) {
-                if (!currentHistory.map { it.copy(id = 0) }.contains(item.copy(id = 0))) {
-                    insertClip(item.copy(id = 0))
-                }
+        val currentHistory = currentHistory.all
+        for (item in items) {
+            if (!currentHistory.map { it.copy(id = 0) }.contains(item.copy(id = 0))) {
+                insertClip(item.copy(id = 0))
             }
         }
     }
 
     fun deleteClip(item: ClipboardItem, onlyIfUnpinned: Boolean) {
-        ioScope.launch {
-            if (onlyIfUnpinned) {
-                clipHistoryDao?.deleteIfUnpinned(item.id)
-            } else {
-                clipHistoryDao?.delete(item.id)
-            }
-            tryOrNull {
-                val uri = item.uri
-                if (uri != null) {
-                    appContext.contentResolver.delete(uri, null, null)
-                }
+        if (onlyIfUnpinned) {
+            clipHistoryDao?.deleteIfUnpinned(item.id)
+        } else {
+            clipHistoryDao?.delete(item.id)
+        }
+        tryOrNull {
+            val uri = item.uri
+            if (uri != null) {
+                appContext.contentResolver.delete(uri, null, null)
             }
         }
     }
 
     fun pinClip(item: ClipboardItem) {
-        ioScope.launch {
-            clipHistoryDao?.update(item.copy(isPinned = true))
-        }
+        clipHistoryDao?.update(item.copy(isPinned = true))
     }
 
     fun unpinClip(item: ClipboardItem) {
-        ioScope.launch {
-            clipHistoryDao?.update(item.copy(isPinned = false))
-        }
+        clipHistoryDao?.update(item.copy(isPinned = false))
     }
 
-    fun pasteItem(item: ClipboardItem) {
+    suspend fun pasteItem(item: ClipboardItem) {
         val editorInstance by appContext.editorInstance()
-        editorInstance.commitClipboardItem(item).also { result ->
-            if (!result) {
-                appContext.showShortToastSync("Failed to paste item.")
-            }
+        if (!editorInstance.commitClipboardItem(item)) {
+            appContext.showShortToast("Failed to paste item.")
         }
     }
 

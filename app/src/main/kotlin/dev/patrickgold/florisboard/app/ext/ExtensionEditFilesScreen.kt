@@ -38,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -52,11 +53,13 @@ import dev.patrickgold.florisboard.lib.compose.FlorisScreen
 import dev.patrickgold.jetpref.datastore.ui.Preference
 import dev.patrickgold.jetpref.material.ui.JetPrefAlertDialog
 import dev.patrickgold.jetpref.material.ui.JetPrefTextField
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.florisboard.lib.android.query
 import org.florisboard.lib.android.readToFile
 import org.florisboard.lib.android.showLongToast
-import org.florisboard.lib.android.showLongToastSync
-import org.florisboard.lib.android.showShortToastSync
+import org.florisboard.lib.android.showShortToast
 import org.florisboard.lib.compose.FlorisIconButton
 import org.florisboard.lib.compose.stringRes
 import org.florisboard.lib.kotlin.io.parentDir
@@ -81,10 +84,10 @@ val MIME_TYPES = mapOf(
         "image/*",
     ),
 )
-
 @Composable
 fun ExtensionEditFilesScreen(workspace: CacheManager.ExtEditorWorkspace<*>) = FlorisScreen {
     title = stringRes(R.string.ext__editor__files__title)
+    val scope = rememberCoroutineScope()
 
     fun handleBackPress() {
         workspace.currentAction = null
@@ -110,24 +113,31 @@ fun ExtensionEditFilesScreen(workspace: CacheManager.ExtEditorWorkspace<*>) = Fl
         var currentImportDest by remember { mutableStateOf<String?>(null) }
         var currentImportResult by remember { mutableStateOf<Result<Pair<File, String>>?>(null) }
 
+
         val importLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent(),
             onResult = { uri ->
-                currentImportResult = runCatching {
-                    checkNotNull(uri) { "" }
-                    val tempFile = context.cacheDir.subFile("temp_${UUID.randomUUID()}")
-                    context.contentResolver.readToFile(uri, tempFile)
-                    val mimeType = context.contentResolver.getType(uri)
-                    val filter = MIME_TYPES[currentImportDest!!]!!
-                    check(filter.matches(mimeType)) {
-                        "Given file mime type was '$mimeType', expected one of ${filter.types}"
+                scope.launch(Dispatchers.IO) {
+                    val result = runCatching {
+                        checkNotNull(uri) { "" }
+                        val tempFile = context.cacheDir.subFile("temp_${UUID.randomUUID()}")
+                        context.contentResolver.readToFile(uri, tempFile)
+                        val mimeType = context.contentResolver.getType(uri)
+                        val filter = MIME_TYPES[currentImportDest!!]!!
+                        check(filter.matches(mimeType)) {
+                            "Given file mime type was '$mimeType', expected one of ${filter.types}"
+                        }
+                        val fileName =
+                            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME)).use { cursor ->
+                                if (cursor == null || !cursor.moveToFirst()) return@use null
+                                val name = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                                cursor.getString(name)
+                            }
+                        tempFile to fileName.orEmpty()
                     }
-                    val fileName = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME)).use { cursor ->
-                        if (cursor == null || !cursor.moveToFirst()) return@use null
-                        val name = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        cursor.getString(name)
+                    withContext(Dispatchers.Main) {
+                        currentImportResult = result
                     }
-                    tempFile to fileName.orEmpty()
                 }
             },
         )
@@ -186,41 +196,51 @@ fun ExtensionEditFilesScreen(workspace: CacheManager.ExtEditorWorkspace<*>) = Fl
                     neutralLabel = stringRes(R.string.action__delete),
                     allowOutsideDismissal = true,
                     onNeutral = {
-                        if (file.delete()) {
-                            context.showShortToastSync("Successfully deleted")
-                        } else {
-                            context.showShortToastSync("Failed to delete")
+                        scope.launch(Dispatchers.IO) {
+                            val success = file.delete()
+                            withContext(Dispatchers.Main) {
+                                if (success) {
+                                    context.showShortToast("Successfully deleted")
+                                } else {
+                                    context.showShortToast("Failed to delete")
+                                }
+                                version++
+                            }
                         }
-                        dialogFile = null
-                        version++
                     },
                     onConfirm = {
-                        val newFile = file.parentFile!!.subFile(fileNameInput).canonicalFile
-                        if (newFile.parentFile != file.canonicalFile.parentFile) {
-                            context.showLongToastSync("Invalid file name!")
-                            return@JetPrefAlertDialog
+                        scope.launch(Dispatchers.IO) {
+                            val newFile = file.parentFile!!.subFile(fileNameInput).canonicalFile
+                            if (newFile.parentFile != file.canonicalFile.parentFile) {
+                                withContext(Dispatchers.Main) {
+                                    context.showLongToast("Invalid file name!")
+                                }
+                                return@launch
+                            }
+                            if (newFile.exists()) {
+                                withContext(Dispatchers.Main) {
+                                    context.showShortToast("Filename already exists.")
+                                }
+                                return@launch
+                            }
+                            val success = file.renameTo(newFile)
+                            withContext(Dispatchers.Main) {
+                                if (success) {
+                                    context.showShortToast("Successfully renamed")
+                                } else {
+                                    context.showShortToast("Failed to rename the file.")
+                                }
+                                version++
+                            }
                         }
-                        if (newFile.exists()) {
-                            context.showShortToastSync("Filename already exists.")
-                            return@JetPrefAlertDialog
-                        }
-                        val success = file.renameTo(newFile)
-                        if (success) {
-                            context.showShortToastSync("Successfully renamed")
-                        } else {
-                            context.showShortToastSync("Failed to rename the file.")
-                        }
-                        dialogFile = null
-                        version++
                     },
                     onDismiss = {
-                        dialogFile = null
                     },
                 ) {
                     JetPrefTextField(
                         labelText = stringRes(R.string.general__file_name),
                         value = fileNameInput,
-                        onValueChange = { fileNameInput = it },
+                        onValueChange = { },
                         singleLine = true,
                     )
                 }
@@ -253,36 +273,50 @@ fun ExtensionEditFilesScreen(workspace: CacheManager.ExtEditorWorkspace<*>) = Fl
                 title = stringRes(R.string.action__import_file),
                 confirmLabel = stringRes(R.string.action__add),
                 onConfirm = {
-                    val fileName = fileNameInput.trim()
-                    val dir = workspace.extDir.subDir(dest)
-                    dir.mkdirs()
-                    val file = dir.subFile(fileName)
-                    if (file.parentDir != workspace.extDir.subDir(dest)) {
-                        context.showShortToastSync("Invalid file name")
-                    } else if (file.exists()) {
-                        context.showShortToastSync("File already exists")
-                    } else {
-                        val tempFile = result.first
-                        if (!tempFile.renameTo(file)) {
-                            context.showShortToastSync("Failed to rename file")
-                            tempFile.delete()
+                    scope.launch(Dispatchers.IO) {
+                        val fileName = fileNameInput.trim()
+                        val dir = workspace.extDir.subDir(dest)
+                        dir.mkdirs()
+                        val file = dir.subFile(fileName)
+                        if (file.parentDir != workspace.extDir.subDir(dest)) {
+                            withContext(Dispatchers.Main) {
+                                context.showShortToast("Invalid file name")
+                            }
+                        } else if (file.exists()) {
+                            withContext(Dispatchers.Main) {
+                                context.showShortToast("File already exists")
+                            }
+                        } else {
+                            val tempFile = result.first
+                            if (!tempFile.renameTo(file)) {
+                                withContext(Dispatchers.Main) {
+                                    context.showShortToast("Failed to rename file")
+                                }
+                                tempFile.delete()
+                            }
+                            withContext(Dispatchers.Main) {
+                                currentImportDest = null
+                                currentImportResult = null
+                                version++
+                            }
                         }
-                        currentImportDest = null
-                        currentImportResult = null
-                        version++
                     }
                 },
                 dismissLabel = stringRes(R.string.action__cancel),
                 onDismiss = {
-                    val tempFile = result.first
-                    tempFile.delete()
-                    currentImportDest = null
-                    currentImportResult = null
+                    scope.launch(Dispatchers.IO) {
+                        val tempFile = result.first
+                        tempFile.delete()
+                        withContext(Dispatchers.Main) {
+                            currentImportDest = null
+                            currentImportResult = null
+                        }
+                    }
                 },
             ) {
                 JetPrefTextField(
                     value = fileNameInput,
-                    onValueChange = { fileNameInput = it },
+                    onValueChange = { },
                     singleLine = true,
                 )
             }

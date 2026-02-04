@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -34,7 +35,10 @@ import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.ime.core.DisplayLanguageNamesIn
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
 import dev.patrickgold.jetpref.datastore.model.observeAsState
-import org.florisboard.lib.android.showLongToastSync
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.florisboard.lib.android.showLongToast
 import org.florisboard.lib.compose.FlorisIconButton
 import org.florisboard.lib.compose.stringRes
 import org.florisboard.lib.kotlin.io.subDir
@@ -48,30 +52,37 @@ fun AndroidLocalesScreen() = FlorisScreen {
 
     val context = LocalContext.current
     val availableLocales = remember { Locale.getAvailableLocales().sortedBy { it.toLanguageTag() } }
+    val scope = rememberCoroutineScope()
 
     actions {
         FlorisIconButton(
             onClick = {
-                try {
-                    val devtoolsDir = context.noBackupFilesDir.subDir("devtools")
-                    devtoolsDir.mkdirs()
-                    val txtFile = devtoolsDir.subFile("system_locales.tsv")
-                    txtFile.bufferedWriter().use { out ->
-                        for (locale in availableLocales) {
-                            out.append(locale.toLanguageTag())
-                            out.append('\t')
-                            out.append(locale.getDisplayName(Locale.ENGLISH))
-                            out.append('\t')
-                            out.append(locale.getDisplayName(locale))
-                            out.appendLine()
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val devtoolsDir = context.noBackupFilesDir.subDir("devtools")
+                        devtoolsDir.mkdirs()
+                        val txtFile = devtoolsDir.subFile("system_locales.tsv")
+                        txtFile.bufferedWriter().use { out ->
+                            for (locale in availableLocales) {
+                                out.append(locale.toLanguageTag())
+                                out.append('\t')
+                                out.append(locale.getDisplayName(Locale.ENGLISH))
+                                out.append('\t')
+                                out.append(locale.getDisplayName(locale))
+                                out.appendLine()
+                            }
+                        }
+                        withContext(Dispatchers.Main) {
+                            context.showLongToast("Exported available system locales to \"${txtFile.path}\"")
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            context.showLongToast(
+                                R.string.error__snackbar_message_template,
+                                "error_message" to e.message.toString(),
+                            )
                         }
                     }
-                    context.showLongToastSync("Exported available system locales to \"${txtFile.path}\"")
-                } catch (e: Exception) {
-                    context.showLongToastSync(
-                        R.string.error__snackbar_message_template,
-                        "error_message" to e.message.toString(),
-                    )
                 }
             },
             icon = Icons.Default.Save,

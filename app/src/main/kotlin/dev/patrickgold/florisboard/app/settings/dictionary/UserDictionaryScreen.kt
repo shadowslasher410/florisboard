@@ -49,8 +49,6 @@ import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.app.LocalNavController
 import dev.patrickgold.florisboard.app.settings.theme.DialogProperty
 import dev.patrickgold.florisboard.ime.dictionary.DictionaryManager
-import dev.patrickgold.florisboard.ime.dictionary.FREQUENCY_MAX
-import dev.patrickgold.florisboard.ime.dictionary.FREQUENCY_MIN
 import dev.patrickgold.florisboard.ime.dictionary.UserDictionaryDao
 import dev.patrickgold.florisboard.ime.dictionary.UserDictionaryEntry
 import dev.patrickgold.florisboard.ime.dictionary.UserDictionaryValidation
@@ -62,9 +60,11 @@ import dev.patrickgold.florisboard.lib.util.launchActivity
 import dev.patrickgold.jetpref.material.ui.JetPrefAlertDialog
 import dev.patrickgold.jetpref.material.ui.JetPrefListItem
 import dev.patrickgold.jetpref.material.ui.JetPrefTextField
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.florisboard.lib.android.showLongToastSync
+import kotlinx.coroutines.withContext
+import org.florisboard.lib.android.showLongToast
 import org.florisboard.lib.android.stringRes
 import org.florisboard.lib.compose.FlorisIconButton
 import org.florisboard.lib.compose.rippleClickable
@@ -113,22 +113,32 @@ fun UserDictionaryScreen(type: UserDictionaryType) = FlorisScreen {
         }
     }
 
-    fun buildUi() {
+    suspend fun buildUi() {
         if (currentLocale != null) {
             //subtitle = getDisplayNameForLocale(currentLocale)
             val locale = if (currentLocale == AllLanguagesLocale) null else currentLocale
-            wordList = userDictionaryDao()?.queryAll(locale) ?: emptyList()
-            if (wordList.isEmpty()) {
-                currentLocale = null
+            withContext(Dispatchers.IO) {
+                val list = userDictionaryDao()?.queryAll(locale) ?: emptyList()
+                withContext(Dispatchers.Main) {
+                    wordList = list
+                    if (wordList.isEmpty()) {
+                        currentLocale = null
+                    }
+                }
             }
         }
         if (currentLocale == null) {
             //subtitle = null
-            languageList = userDictionaryDao()
-                ?.queryLanguageList()
-                ?.sortedBy { it?.displayLanguage() }
-                ?.map { it ?: AllLanguagesLocale }
-                ?: emptyList()
+            withContext(Dispatchers.IO) {
+                val list = userDictionaryDao()
+                    ?.queryLanguageList()
+                    ?.sortedBy { it?.displayLanguage() }
+                    ?.map { it ?: AllLanguagesLocale }
+                    ?: emptyList()
+                withContext(Dispatchers.Main) {
+                    languageList = list
+                }
+            }
         }
     }
 
@@ -138,45 +148,55 @@ fun UserDictionaryScreen(type: UserDictionaryType) = FlorisScreen {
             // If uri is null it indicates that the selection activity was canceled (mostly
             // by pressing the back button), so we don't display an error message here.
             if (uri == null) return@rememberLauncherForActivityResult
-            val db = when (type) {
-                UserDictionaryType.FLORIS -> dictionaryManager.florisUserDictionaryDatabase()
-                UserDictionaryType.SYSTEM -> dictionaryManager.systemUserDictionaryDatabase()
-            }
-            if (db == null) {
-                context.showLongToastSync("Database handle is null, failed to import")
-                return@rememberLauncherForActivityResult
-            }
-            runCatching {
-                db.importCombinedList(context, uri)
-            }.onSuccess {
-                buildUi()
-                context.showLongToastSync(R.string.settings__udm__dictionary_import_success)
-            }.onFailure { error ->
-                context.showLongToastSync("Error: ${error.localizedMessage}")
+            scope.launch {
+                val db = when (type) {
+                    UserDictionaryType.FLORIS -> dictionaryManager.florisUserDictionaryDatabase()
+                    UserDictionaryType.SYSTEM -> dictionaryManager.systemUserDictionaryDatabase()
+                }
+                if (db == null) {
+                    context.showLongToast("Database handle is null, failed to import")
+                    return@launch
+                }
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        db.importCombinedList(context, uri)
+                    }
+                }
+                result.onSuccess {
+                    buildUi()
+                    context.showLongToast(R.string.settings__udm__dictionary_import_success)
+                }.onFailure { error ->
+                    context.showLongToast("Error: ${error.localizedMessage}")
+                }
             }
         },
     )
 
     val exportDictionary = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument(),
+        contract = ActivityResultContracts.CreateDocument("application/clb"),
         onResult = { uri ->
             // If uri is null it indicates that the selection activity was canceled (mostly
             // by pressing the back button), so we don't display an error message here.
             if (uri == null) return@rememberLauncherForActivityResult
-            val db = when (type) {
-                UserDictionaryType.FLORIS -> dictionaryManager.florisUserDictionaryDatabase()
-                UserDictionaryType.SYSTEM -> dictionaryManager.systemUserDictionaryDatabase()
-            }
-            if (db == null) {
-                context.showLongToastSync("Database handle is null, failed to export")
-                return@rememberLauncherForActivityResult
-            }
-            runCatching {
-                db.exportCombinedList(context, uri)
-            }.onSuccess {
-                context.showLongToastSync(R.string.settings__udm__dictionary_export_success)
-            }.onFailure { error ->
-                context.showLongToastSync("Error: ${error.localizedMessage}")
+            scope.launch {
+                val db = when (type) {
+                    UserDictionaryType.FLORIS -> dictionaryManager.florisUserDictionaryDatabase()
+                    UserDictionaryType.SYSTEM -> dictionaryManager.systemUserDictionaryDatabase()
+                }
+                if (db == null) {
+                    context.showLongToast("Database handle is null, failed to export")
+                    return@launch
+                }
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        db.exportCombinedList(context, uri)
+                    }
+                }
+                result.onSuccess {
+                    context.showLongToast(R.string.settings__udm__dictionary_export_success)
+                }.onFailure { error ->
+                    context.showLongToast("Error: ${error.localizedMessage}")
+                }
             }
         },
     )
@@ -184,11 +204,13 @@ fun UserDictionaryScreen(type: UserDictionaryType) = FlorisScreen {
     navigationIcon {
         FlorisIconButton(
             onClick = {
-                if (currentLocale != null) {
-                    currentLocale = null
-                    buildUi()
-                } else {
-                    navController.popBackStack()
+                scope.launch {
+                    if (currentLocale != null) {
+                        currentLocale = null
+                        buildUi()
+                    } else {
+                        navController.popBackStack()
+                    }
                 }
             },
             icon = if (currentLocale != null) {
@@ -226,7 +248,7 @@ fun UserDictionaryScreen(type: UserDictionaryType) = FlorisScreen {
             if (type == UserDictionaryType.SYSTEM) {
                 DropdownMenuItem(
                     onClick = {
-                        context.launchActivity { it.action = SystemUserDictionaryUiIntentAction }
+                        scope.launch { context.launchActivity { it.action = SystemUserDictionaryUiIntentAction } }
                         expanded = false
                     },
                     text = { Text(text = stringRes(R.string.settings__udm__open_system_manager_ui)) },
@@ -245,12 +267,16 @@ fun UserDictionaryScreen(type: UserDictionaryType) = FlorisScreen {
 
     content {
         BackHandler(currentLocale != null) {
-            currentLocale = null
-            buildUi()
+            scope.launch {
+                currentLocale = null
+                buildUi()
+            }
         }
 
         LaunchedEffect(Unit) {
-            dictionaryManager.loadUserDictionariesIfNecessary()
+            withContext(Dispatchers.IO) {
+                dictionaryManager.loadUserDictionariesIfNecessary()
+            }
             buildUi()
         }
 
@@ -328,31 +354,30 @@ fun UserDictionaryScreen(type: UserDictionaryType) = FlorisScreen {
                         freqValidation.isInvalid() ||
                         shortcutValidation.isInvalid() ||
                         localeValidation.isInvalid()
-                    if (isInvalid) {
-                        showValidationErrors = true
-                    } else {
-                        val entry = UserDictionaryEntry(
-                            id = wordEntry.id,
-                            word = word.trim(),
-                            freq = freq.toInt(10),
-                            shortcut = shortcut.trim().takeIf { it.isNotBlank() },
-                            locale = locale.trim().takeIf { it.isNotBlank() }?.let {
-                                // Normalize tag
-                                FlorisLocale.fromTag(it).localeTag()
-                            },
-                        )
-                        if (isAddWord) {
-                            userDictionaryDao()?.insert(entry)
-                        } else {
-                            userDictionaryDao()?.update(entry)
+
+                     if (!isInvalid) {
+                        scope.launch(Dispatchers.IO) {
+                            val entry = UserDictionaryEntry(
+                                id = wordEntry.id,
+                                word = word.trim(),
+                                freq = freq.toInt(10),
+                                shortcut = shortcut.trim().takeIf { it.isNotBlank() },
+                                locale = locale.trim().takeIf { it.isNotBlank() }?.let {
+                                    // Normalize tag
+                                    FlorisLocale.fromTag(it).localeTag()
+                                },
+                            )
+                            if (isAddWord) {
+                                userDictionaryDao()?.insert(entry)
+                            } else {
+                                userDictionaryDao()?.update(entry)
+                            }
                         }
-                        userDictionaryEntryForDialog = null
-                        buildUi()
+                         scope.launch { buildUi() }
                     }
                 },
                 dismissLabel = stringRes(R.string.action__cancel),
                 onDismiss = {
-                    userDictionaryEntryForDialog = null
                 },
                 neutralLabel = if (isAddWord) {
                     null
@@ -360,9 +385,10 @@ fun UserDictionaryScreen(type: UserDictionaryType) = FlorisScreen {
                     stringRes(R.string.action__delete)
                 },
                 onNeutral = {
-                    userDictionaryDao()?.delete(wordEntry)
-                    userDictionaryEntryForDialog = null
-                    buildUi()
+                    scope.launch(Dispatchers.IO) {
+                        userDictionaryDao()?.delete(wordEntry)
+                    }
+                    scope.launch { buildUi() }
                 },
             ) {
                 Column {
@@ -373,10 +399,7 @@ fun UserDictionaryScreen(type: UserDictionaryType) = FlorisScreen {
                         )
                         Validation(showValidationErrors, wordValidation)
                     }
-                    DialogProperty(text = stringRes(
-                        R.string.settings__udm__dialog__freq_label,
-                        "f_min" to FREQUENCY_MIN, "f_max" to FREQUENCY_MAX,
-                    )) {
+                    DialogProperty(text = stringRes(R.string.settings__udm__dialog__freq_label)) {
                         JetPrefTextField(
                             value = freq,
                             onValueChange = { freq = it },

@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,15 +60,11 @@ import dev.patrickgold.jetpref.datastore.runtime.AndroidAppDataStorage
 import dev.patrickgold.jetpref.datastore.runtime.FileBasedStorage
 import dev.patrickgold.jetpref.datastore.runtime.ImportStrategy
 import dev.patrickgold.jetpref.datastore.ui.Preference
-import java.io.FileNotFoundException
-import java.text.DateFormat
-import java.util.*
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.florisboard.lib.android.readToFile
 import org.florisboard.lib.android.showLongToast
-import org.florisboard.lib.android.showLongToastSync
 import org.florisboard.lib.compose.FlorisButtonBar
 import org.florisboard.lib.compose.FlorisCardDefaults
 import org.florisboard.lib.compose.FlorisOutlinedBox
@@ -78,6 +75,10 @@ import org.florisboard.lib.kotlin.io.deleteContentsRecursively
 import org.florisboard.lib.kotlin.io.readJson
 import org.florisboard.lib.kotlin.io.subDir
 import org.florisboard.lib.kotlin.io.subFile
+import java.io.FileNotFoundException
+import java.text.DateFormat
+import java.util.Calendar
+import java.util.TimeZone
 
 object Restore {
     const val MIN_VERSION_CODE = 64
@@ -96,9 +97,7 @@ fun RestoreScreen() = FlorisScreen {
 
     val restoreFilesSelector = remember { Backup.FilesSelector() }
     var importStrategy by remember { mutableStateOf(ImportStrategy.Merge) }
-    // TODO: rememberCoroutineScope() is unusable because it provides the scope in a cancelled state, which does
-    //  not make sense at all. I suspect that this is a bug and once it is resolved we can use it here again.
-    val restoreScope = remember { CoroutineScope(Dispatchers.Main) }
+    val scope = rememberCoroutineScope()
     var restoreWorkspace by remember {
         mutableStateOf<CacheManager.BackupAndRestoreWorkspace?>(null)
     }
@@ -107,39 +106,52 @@ fun RestoreScreen() = FlorisScreen {
         contract = ActivityResultContracts.GetContent(),
         onResult = { uri ->
             if (uri == null) return@rememberLauncherForActivityResult
-            runCatching {
-                restoreWorkspace?.close()
-                restoreWorkspace = null
-                val workspace = cacheManager.backupAndRestore.new()
-                workspace.zipFile = workspace.inputDir.subFile(Restore.BACKUP_ARCHIVE_FILE_NAME)
-                context.contentResolver.readToFile(uri, workspace.zipFile)
-                ZipUtils.unzip(workspace.zipFile, workspace.outputDir)
-                workspace.metadata = try {
-                    workspace.outputDir.subFile(Backup.METADATA_JSON_NAME).readJson()
-                } catch (e: FileNotFoundException) {
-                    error("Invalid archive: either backup_metadata.json is missing or file is not a ZIP archive.")
-                }
-                workspace.restoreWarningId = when {
-                    workspace.metadata.versionCode != BuildConfig.VERSION_CODE -> {
-                        R.string.backup_and_restore__restore__metadata_warn_different_version
+            scope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val workspace = cacheManager.backupAndRestore.new()
+                        workspace.zipFile = workspace.inputDir.subFile(Restore.BACKUP_ARCHIVE_FILE_NAME)
+                        context.contentResolver.readToFile(uri, workspace.zipFile)
+                        ZipUtils.unzip(workspace.zipFile, workspace.outputDir)
+                        workspace.metadata = try {
+                            workspace.outputDir.subFile(Backup.METADATA_JSON_NAME).readJson()
+                        } catch (_: FileNotFoundException) {
+                            error("Invalid archive: either backup_metadata.json is missing or file is not a ZIP archive.")
+                        }
+                        workspace
                     }
-                    !workspace.metadata.packageName.startsWith(Restore.PACKAGE_NAME) -> {
-                        R.string.backup_and_restore__restore__metadata_warn_different_vendor
-                    }
-                    else -> null
                 }
-                workspace.restoreErrorId = when {
-                    workspace.metadata.packageName.isBlank() || workspace.metadata.versionCode < Restore.MIN_VERSION_CODE -> {
-                        R.string.backup_and_restore__restore__metadata_error_invalid_metadata
+                withContext(Dispatchers.Main) {
+                    val oldWorkspace = restoreWorkspace
+                    scope.launch(Dispatchers.IO) { oldWorkspace?.close() }
+                    restoreWorkspace = null
+                    result.onSuccess { workspace ->
+                        workspace.restoreWarningId = when {
+                            workspace.metadata.versionCode != BuildConfig.VERSION_CODE -> {
+                                R.string.backup_and_restore__restore__metadata_warn_different_version
+                            }
+
+                            !workspace.metadata.packageName.startsWith(Restore.PACKAGE_NAME) -> {
+                                R.string.backup_and_restore__restore__metadata_warn_different_vendor
+                            }
+
+                            else -> null
+                        }
+                        workspace.restoreErrorId = when {
+                            workspace.metadata.packageName.isBlank() || workspace.metadata.versionCode < Restore.MIN_VERSION_CODE -> {
+                                R.string.backup_and_restore__restore__metadata_error_invalid_metadata
+                            }
+
+                            else -> null
+                        }
+                        restoreWorkspace = workspace
+                    }.onFailure { error ->
+                        context.showLongToast(
+                            R.string.backup_and_restore__restore__failure,
+                            "error_message" to error.localizedMessage,
+                        )
                     }
-                    else -> null
                 }
-                restoreWorkspace = workspace
-            }.onFailure { error ->
-                context.showLongToastSync(
-                    R.string.backup_and_restore__restore__failure,
-                    "error_message" to error.localizedMessage,
-                )
             }
         },
     )
@@ -239,16 +251,22 @@ fun RestoreScreen() = FlorisScreen {
             ButtonBarSpacer()
             ButtonBarTextButton(
                 onClick = {
-                    restoreWorkspace?.close()
-                    navController.navigateUp()
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            restoreWorkspace?.close()
+                        }
+                        navController.navigateUp()
+                    }
                 },
                 text = stringRes(R.string.action__cancel),
             )
             ButtonBarButton(
                 onClick = {
-                    restoreScope.launch(Dispatchers.Main) {
+                    scope.launch {
                         try {
-                            performRestore()
+                            withContext(Dispatchers.IO) {
+                                performRestore()
+                            }
                             context.showLongToast(R.string.backup_and_restore__restore__success)
                             navController.navigateUp()
                         } catch (e: Throwable) {
@@ -272,16 +290,12 @@ fun RestoreScreen() = FlorisScreen {
             title = stringRes(R.string.backup_and_restore__restore__mode),
         ) {
             RadioListItem(
-                onClick = {
-                    importStrategy = ImportStrategy.Merge
-                },
+                onClick = { importStrategy = ImportStrategy.Merge },
                 selected = importStrategy == ImportStrategy.Merge,
                 text = stringRes(R.string.backup_and_restore__restore__mode_merge),
             )
             RadioListItem(
-                onClick = {
-                    importStrategy = ImportStrategy.Erase
-                },
+                onClick = { importStrategy = ImportStrategy.Erase },
                 selected = importStrategy == ImportStrategy.Erase,
                 text = stringRes(R.string.backup_and_restore__restore__mode_erase_and_overwrite),
             )
@@ -291,10 +305,12 @@ fun RestoreScreen() = FlorisScreen {
                 runCatching {
                     restoreDataFromFileSystemLauncher.launch("*/*")
                 }.onFailure { error ->
-                    context.showLongToastSync(
-                        R.string.backup_and_restore__restore__failure,
-                        "error_message" to error.localizedMessage,
-                    )
+                    scope.launch {
+                        context.showLongToast(
+                            R.string.backup_and_restore__restore__failure,
+                            "error_message" to error.localizedMessage,
+                        )
+                    }
                 }
             },
             modifier = Modifier

@@ -90,6 +90,7 @@ import dev.patrickgold.jetpref.datastore.model.observeAsState
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.onFailure
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.florisboard.lib.android.isOrientationLandscape
 import org.florisboard.lib.compose.DisposableLifecycleEffect
 import org.florisboard.lib.snygg.SnyggSelector
@@ -505,7 +506,9 @@ private class TextKeyboardLayoutController(
                         if (pointer.hasTriggeredGestureMove && pointer.initialKey?.computedData?.code == KeyCode.DELETE) {
                             val selection = editorInstance.activeContent.selection
                             if (selection.isSelectionMode) {
-                                editorInstance.deleteBackwards(OperationUnit.CHARACTERS)
+                                keyboardManager.scope.launch {
+                                    editorInstance.deleteBackwards(OperationUnit.CHARACTERS)
+                                }
                             }
                         }
                         onTouchCancelInternal(event, pointer)
@@ -528,7 +531,9 @@ private class TextKeyboardLayoutController(
                                 prefs.gestures.deleteKeySwipeLeft.get() != SwipeAction.SELECT_WORDS_PRECISELY) {
                                 val selection = editorInstance.activeContent.selection
                                 if (selection.isSelectionMode) {
-                                    editorInstance.deleteBackwards(OperationUnit.CHARACTERS)
+                                    keyboardManager.scope.launch {
+                                        editorInstance.deleteBackwards(OperationUnit.CHARACTERS)
+                                    }
                                 }
                             }
                             onTouchCancelInternal(event, pointer)
@@ -774,18 +779,22 @@ private class TextKeyboardLayoutController(
                     if (activeSelection.isValid) {
                         if (!inputEventDispatcher.isPressed(KeyCode.SHIFT)) {
                             // Backward select
-                            editorInstance.setSelectionSurrounding(
-                                n = -event.absUnitCountX - 1,
-                                unit = OperationUnit.CHARACTERS,
-                                scope = OperationScope.BEFORE_CURSOR,
-                            )
+                            keyboardManager.scope.launch {
+                                editorInstance.setSelectionSurrounding(
+                                    n = -event.absUnitCountX - 1,
+                                    unit = OperationUnit.CHARACTERS,
+                                    scope = OperationScope.BEFORE_CURSOR,
+                                )
+                            }
                         } else {
                             // Forward select
-                            editorInstance.setSelectionSurrounding(
-                                n = -event.absUnitCountX - 1,
-                                unit = OperationUnit.CHARACTERS,
-                                scope = OperationScope.AFTER_CURSOR,
-                            )
+                            keyboardManager.scope.launch {
+                                editorInstance.setSelectionSurrounding(
+                                    n = -event.absUnitCountX - 1,
+                                    unit = OperationUnit.CHARACTERS,
+                                    scope = OperationScope.AFTER_CURSOR,
+                                )
+                            }
                         }
                     }
                     true
@@ -798,18 +807,22 @@ private class TextKeyboardLayoutController(
                     if (activeSelection.isValid) {
                         if (!inputEventDispatcher.isPressed(KeyCode.SHIFT)) {
                             // Backward select
-                            editorInstance.setSelectionSurrounding(
-                                n = -event.absUnitCountX / 2 - 1,
-                                unit = OperationUnit.WORDS,
-                                scope = OperationScope.BEFORE_CURSOR,
-                            )
+                            keyboardManager.scope.launch {
+                                editorInstance.setSelectionSurrounding(
+                                    n = -event.absUnitCountX / 2 - 1,
+                                    unit = OperationUnit.WORDS,
+                                    scope = OperationScope.BEFORE_CURSOR,
+                                )
+                            }
                         } else {
                             // Forward select
-                            editorInstance.setSelectionSurrounding(
-                                n = -event.absUnitCountX / 2 - 1,
-                                unit = OperationUnit.WORDS,
-                                scope = OperationScope.AFTER_CURSOR,
-                            )
+                            keyboardManager.scope.launch {
+                                editorInstance.setSelectionSurrounding(
+                                    n = -event.absUnitCountX / 2 - 1,
+                                    unit = OperationUnit.WORDS,
+                                    scope = OperationScope.AFTER_CURSOR,
+                                )
+                            }
                         }
                     }
                     true

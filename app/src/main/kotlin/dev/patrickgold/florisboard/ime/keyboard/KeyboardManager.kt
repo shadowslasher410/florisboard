@@ -73,10 +73,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.florisboard.lib.android.AndroidKeyguardManager
 import org.florisboard.lib.android.showLongToast
-import org.florisboard.lib.android.showLongToastSync
-import org.florisboard.lib.android.showShortToastSync
+import org.florisboard.lib.android.showShortToast
 import org.florisboard.lib.android.systemService
 import org.florisboard.lib.kotlin.collectIn
 import org.florisboard.lib.kotlin.collectLatestIn
@@ -92,7 +92,7 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
     private val nlpManager by context.nlpManager()
     private val subtypeManager by context.subtypeManager()
 
-    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     val layoutManager = LayoutManager(context)
     private val keyboardCache = TextKeyboardCache()
 
@@ -203,10 +203,13 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
                 key.compute(computingEvaluator)
                 key.computeLabelsAndDrawables(computingEvaluator)
             }
-            activeEvaluator.value = computingEvaluator
-            activeSmartbarEvaluator.value = computingEvaluator.asSmartbarQuickActionsEvaluator()
-            if (computedKeyboard.mode == KeyboardMode.CHARACTERS) {
-                lastCharactersEvaluator.value = computingEvaluator
+            withContext(Dispatchers.Main)
+            {
+                activeEvaluator.value = computingEvaluator
+                activeSmartbarEvaluator.value = computingEvaluator.asSmartbarQuickActionsEvaluator()
+                if (computedKeyboard.mode == KeyboardMode.CHARACTERS) {
+                    lastCharactersEvaluator.value = computingEvaluator
+                }
             }
         }
     }
@@ -414,29 +417,33 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
      * Handles a [KeyCode.DELETE] event.
      */
     private fun handleBackwardDelete(unit: OperationUnit) {
-        if (inputEventDispatcher.isPressed(KeyCode.SHIFT)) {
-            return handleForwardDelete(unit)
+        scope.launch {
+            if (inputEventDispatcher.isPressed(KeyCode.SHIFT)) {
+                return@launch handleForwardDelete(unit)
+            }
+            activeState.batchEdit {
+                it.isManualSelectionMode = false
+                it.isManualSelectionModeStart = false
+                it.isManualSelectionModeEnd = false
+            }
+            revertPreviouslyAcceptedCandidate()
+            editorInstance.deleteBackwards(unit)
         }
-        activeState.batchEdit {
-            it.isManualSelectionMode = false
-            it.isManualSelectionModeStart = false
-            it.isManualSelectionModeEnd = false
-        }
-        revertPreviouslyAcceptedCandidate()
-        editorInstance.deleteBackwards(unit)
     }
 
     /**
      * Handles a [KeyCode.FORWARD_DELETE] event.
      */
     private fun handleForwardDelete(unit: OperationUnit) {
-        activeState.batchEdit {
-            it.isManualSelectionMode = false
-            it.isManualSelectionModeStart = false
-            it.isManualSelectionModeEnd = false
+        scope.launch {
+            activeState.batchEdit {
+                it.isManualSelectionMode = false
+                it.isManualSelectionModeStart = false
+                it.isManualSelectionModeEnd = false
+            }
+            revertPreviouslyAcceptedCandidate()
+            editorInstance.deleteForwards(unit)
         }
-        revertPreviouslyAcceptedCandidate()
-        editorInstance.deleteForwards(unit)
     }
 
     /**
@@ -549,66 +556,72 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
      * enabled by the user.
      */
     private fun handleSpace(data: KeyData) {
-        val candidate = nlpManager.getAutoCommitCandidate()
-        candidate?.let { commitCandidate(it) }
-        if (prefs.keyboard.spaceBarSwitchesToCharacters.get()) {
-            when (activeState.keyboardMode) {
-                KeyboardMode.NUMERIC_ADVANCED,
-                KeyboardMode.SYMBOLS,
-                KeyboardMode.SYMBOLS2 -> {
-                    activeState.keyboardMode = KeyboardMode.CHARACTERS
-                }
-                else -> { /* Do nothing */ }
-            }
-        }
-        if (prefs.correction.doubleSpacePeriod.get()) {
-            if (inputEventDispatcher.isConsecutiveUp(data)) {
-                val text = editorInstance.run { activeContent.getTextBeforeCursor(2) }
-                if (text.length == 2 && DoubleSpacePeriodMatcher.matches(text)) {
-                    editorInstance.deleteBackwards(OperationUnit.CHARACTERS)
-                    editorInstance.commitText(". ")
-                    return
+        scope.launch {
+            val candidate = nlpManager.getAutoCommitCandidate()
+            candidate?.let { commitCandidate(it) }
+            if (prefs.keyboard.spaceBarSwitchesToCharacters.get()) {
+                when (activeState.keyboardMode) {
+                    KeyboardMode.NUMERIC_ADVANCED,
+                    KeyboardMode.SYMBOLS,
+                    KeyboardMode.SYMBOLS2 -> {
+                        activeState.keyboardMode = KeyboardMode.CHARACTERS
+                    }
+                    else -> { /* Do nothing */ }
                 }
             }
-        }
-        // TODO: this is whether we commit space after selecting candidate. Should be determined by SuggestionProvider
-        if (!subtypeManager.activeSubtype.primaryLocale.supportsAutoSpace &&
+            if (prefs.correction.doubleSpacePeriod.get()) {
+                if (inputEventDispatcher.isConsecutiveUp(data)) {
+                    val text = editorInstance.run { activeContent.getTextBeforeCursor(2) }
+                    if (text.length == 2 && DoubleSpacePeriodMatcher.matches(text)) {
+                        editorInstance.deleteBackwards(OperationUnit.CHARACTERS)
+                        editorInstance.commitText(". ")
+                        return@launch
+                    }
+                }
+            }
+            // TODO: this is whether we commit space after selecting candidate. Should be determined by SuggestionProvider
+            if (!subtypeManager.activeSubtype.primaryLocale.supportsAutoSpace &&
                 candidate != null) { /* Do nothing */ } else {
-            editorInstance.commitText(KeyCode.SPACE.toChar().toString())
+                editorInstance.commitText(KeyCode.SPACE.toChar().toString())
+            }
         }
     }
 
     /**
      * Handles a [KeyCode.TOGGLE_INCOGNITO_MODE] event.
      */
-    private suspend fun handleToggleIncognitoMode() {
-        prefs.suggestion.forceIncognitoModeFromDynamic.set(!prefs.suggestion.forceIncognitoModeFromDynamic.get())
-        val newState = !activeState.isIncognitoMode
-        activeState.isIncognitoMode = newState
-        lastToastReference.get()?.cancel()
-        lastToastReference = WeakReference(
-            if (newState) {
-                appContext.showLongToast(
-                    R.string.incognito_mode__toast_after_enabled,
-                    "app_name" to appContext.getString(R.string.floris_app_name),
-                )
-            } else {
-                appContext.showLongToast(
-                    R.string.incognito_mode__toast_after_disabled,
-                    "app_name" to appContext.getString(R.string.floris_app_name),
-                )
-            }
-        )
+    private fun handleToggleIncognitoMode() {
+        scope.launch {
+            prefs.suggestion.forceIncognitoModeFromDynamic.set(!prefs.suggestion.forceIncognitoModeFromDynamic.get())
+            val newState = !activeState.isIncognitoMode
+            activeState.isIncognitoMode = newState
+            lastToastReference.get()?.cancel()
+            lastToastReference = WeakReference(
+                if (newState) {
+                    appContext.showLongToast(
+                        R.string.incognito_mode__toast_after_enabled,
+                        "app_name" to appContext.getString(R.string.floris_app_name),
+                    )
+                } else {
+                    appContext.showLongToast(
+                        R.string.incognito_mode__toast_after_disabled,
+                        "app_name" to appContext.getString(R.string.floris_app_name),
+                    )
+                }
+            )
+        }
     }
 
     /**
      * Handles a [KeyCode.TOGGLE_AUTOCORRECT] event.
      */
     private fun handleToggleAutocorrect() {
-        lastToastReference.get()?.cancel()
-        lastToastReference = WeakReference(
-            appContext.showLongToastSync("Autocorrect toggle is a placeholder and not yet implemented")
-        )
+        scope.launch {
+            lastToastReference.get()?.cancel()
+            lastToastReference = WeakReference(
+                appContext.showLongToast("Autocorrect toggle is a placeholder and not yet implemented")
+            )
+        }
     }
 
     /**
@@ -691,6 +704,7 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
     }
 
     override fun onInputKeyUp(data: KeyData) = activeState.batchEdit {
+
         val windowController = FlorisImeService.windowControllerOrNull() ?: return@batchEdit
         when (data.code) {
             KeyCode.ARROW_DOWN,
@@ -708,19 +722,34 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
             KeyCode.CHAR_WIDTH_SWITCHER -> handleCharWidthSwitch()
             KeyCode.CHAR_WIDTH_FULL -> handleCharWidthFull()
             KeyCode.CHAR_WIDTH_HALF -> handleCharWidthHalf()
-            KeyCode.CLIPBOARD_CUT -> editorInstance.performClipboardCut()
-            KeyCode.CLIPBOARD_COPY -> editorInstance.performClipboardCopy()
-            KeyCode.CLIPBOARD_PASTE -> editorInstance.performClipboardPaste()
+
+            KeyCode.CLIPBOARD_CUT ->
+            {
+                scope.launch {
+                    editorInstance.performClipboardCut()
+                }
+            }
+
+            KeyCode.CLIPBOARD_COPY ->
+            {
+                scope.launch { editorInstance.performClipboardCopy() }
+            }
+            KeyCode.CLIPBOARD_PASTE -> {
+                scope.launch { editorInstance.performClipboardPaste() }
+            }
             KeyCode.CLIPBOARD_SELECT -> handleClipboardSelect()
             KeyCode.CLIPBOARD_SELECT_ALL -> editorInstance.performClipboardSelectAll()
             KeyCode.CLIPBOARD_CLEAR_HISTORY -> clipboardManager.clearHistory()
             KeyCode.CLIPBOARD_CLEAR_FULL_HISTORY -> clipboardManager.clearFullHistory()
             KeyCode.CLIPBOARD_CLEAR_PRIMARY_CLIP -> {
-                if (prefs.clipboard.clearPrimaryClipAffectsHistoryIfUnpinned.get()) {
+                scope.launch {
+                    if (prefs.clipboard.clearPrimaryClipAffectsHistoryIfUnpinned.get()) {
                     clipboardManager.primaryClip?.let { clipboardManager.deleteClip(it, onlyIfUnpinned = true) }
                 }
-                clipboardManager.updatePrimaryClip(null)
-                appContext.showShortToastSync(R.string.clipboard__cleared_primary_clip)
+                    clipboardManager.updatePrimaryClip(null)
+                    appContext.showShortToast(R.string.clipboard__cleared_primary_clip)
+                }
+
             }
             KeyCode.TOGGLE_FLOATING_WINDOW -> windowController.actions.toggleFloatingWindow()
             KeyCode.TOGGLE_COMPACT_LAYOUT -> windowController.actions.toggleCompactLayout()
@@ -855,7 +884,7 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
             activeState.debugShowDragAndDropHelpers = devtoolsEnabled && prefs.devtools.showDragAndDropHelpers.get()
         }
     }
-
+    @Suppress("unused")
     fun onHardwareKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
             KeyEvent.KEYCODE_SPACE -> {
@@ -874,6 +903,7 @@ class KeyboardManager(context: Context) : InputKeyEventReceiver {
         }
     }
 
+    @Suppress("unused")
     fun onHardwareKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> {
